@@ -1,0 +1,15 @@
+# https://taskfile.dev
+version: '3'
+
+tasks:
+  tidy:
+    cmds:
+      - go mod tidy
+    silent: true
+
+  dev:
+    desc: "Start live‑reloading dev server (rebuild on change to main.go)"
+    deps: [tidy]
+    cmds:
+      - go tool air # Air will watch *.go by default, thus including main.go
+    interactive: true

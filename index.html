@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Browser Shell (DataStar)</title>
+
+    <!-- Helpers FIRST so they're available before Datastar evaluates attributes -->
+    <script>
+      // Safe HTML escaping for any server/user text we inject via innerHTML
+      window.escapeHTML = function (s) {
+        return String(s).replace(/[&<>"']/g, function (m) {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#039;",
+          }[m];
+        });
+      };
+      // For Tab completion
+      window.longestCommonPrefix = function (arr) {
+        if (!arr || !arr.length) return "";
+        let p = arr[0];
+        for (let i = 1; i < arr.length; i++) {
+          const s = arr[i];
+          let j = 0;
+          while (j < p.length && j < s.length && p[j] === s[j]) j++;
+          p = p.slice(0, j);
+          if (!p) break;
+        }
+        return p;
+      };
+      // Config pulled from server (cat size limit)
+      window.CAT_MAX = 262144; // default, will be overwritten by /api/config
+      fetch("/api/config")
+        .then((r) => r.json())
+        .then((cfg) => {
+          if (cfg && typeof cfg.catMax === "number")
+            window.CAT_MAX = cfg.catMax;
+        })
+        .catch(() => {});
+      // Start a download by programmatically clicking an <a>
+      window.startDownload = function (href) {
+        try {
+          const a = document.createElement("a");
+          a.href = href;
+          a.download = "";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        } catch {}
+      };
+    </script>
+
+    <!-- Datastar: Alpine-like data-* reactivity -->
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js"
+    ></script>
+
+    <style>
+      :root {
+        --olivetti: #39ff14;
+        --olivetti: #9eb208;
+        --term-bg: #000;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--term-bg);
+        color: var(--olivetti);
+        font:
+          16px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Monaco,
+          Consolas,
+          "Liberation Mono",
+          "DejaVu Sans Mono",
+          monospace;
+      }
+      .terminal {
+        height: 100%;
+        padding: 1rem;
+        outline: none;
+        display: flex;
+      }
+      .screen {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        flex: 1;
+        overflow: auto;
+        text-shadow:
+          0 0 2px var(--olivetti),
+          0 0 6px var(--olivetti);
+      }
+      .line {
+        display: block;
+      }
+      .ps1,
+      .input,
+      .out {
+        color: var(--olivetti);
+      }
+      .out {
+        opacity: 0.85;
+      }
+      .cursor {
+        display: inline-block;
+        width: 0.6em;
+      }
+      .terminal:focus-within .cursor {
+        animation: blink 1s steps(1, end) infinite;
+      }
+      .terminal:not(:focus-within) .cursor {
+        animation: none;
+        opacity: 0.5;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      ::selection {
+        background: var(--olivetti);
+        color: #000;
+      }
+      .ghost {
+        position: fixed;
+        left: -10000px;
+        top: auto;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      class="terminal"
+      data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to fswutils!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• rget|download FILE - download a file</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0 }"
+      data-on-load="el.querySelector('#ghost').focus()"
+      data-on-click="el.querySelector('#ghost').focus()"
+      data-on-keydown="
+         const k=evt.key;
+         if (k==='Enter') {
+           const cmd = $current;
+           $buffer += `<div class='line'><span class='ps1'>${$ps1}</span>${escapeHTML(cmd)}</div>`;
+           if (cmd) { $history.push(cmd); }
+           $histIndex = $history.length;
+           $current = '';
+           const sc = el.querySelector('.screen');
+           requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
+
+           fetch('/api/exec', {
+             method: 'POST', headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify({ input: cmd })
+           })
+           .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+           .then((res) => {
+             const { output, download, cwd } = res || {};
+             if (typeof output === 'string' && output.length) {
+               $buffer += `<div class='line out'>${escapeHTML(output)}</div>`;
+             }
+             if (download) { startDownload(download); }
+             if (cwd !== undefined) {
+                $cwd = cwd;
+                $ps1 = `guest@browser:${cwd}$ `;
+             }
+             requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
+           })
+           .catch(err => {
+             $buffer += `<div class='line out'>error: ${escapeHTML(String(err))}</div>`;
+             requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
+           });
+
+           evt.preventDefault();
+         } else if (k==='Backspace') {
+           if ($current.length) { $current = $current.slice(0,-1); }
+           evt.preventDefault();
+         } else if (k==='Tab') {
+           const m = $current.match(/^\s*(\S+)(?:\s+(.*))?$/);
+           const cmd = m ? m[1] : '';
+           let arg = m && m[2] !== undefined ? m[2] : '';
+           const isCd = (cmd === 'cd');
+           const isCat = (cmd === 'cat');
+           const isGet = (cmd === 'rget' || cmd === 'download');
+           if (isCd || isCat || isGet) {
+             const body = { path: arg || '', dirsOnly: false, filesOnly: false, maxSize: 0, textOnly: false };
+             if (isCd) { body.dirsOnly = true; }
+             if (isCat) { body.filesOnly = true; body.textOnly = true; body.maxSize = (window.CAT_MAX||0); }
+             if (isGet) { body.filesOnly = true; }
+             fetch('/api/complete', {
+               method: 'POST', headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify(body)
+             })
+             .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+             .then(({ items }) => {
+               if (!Array.isArray(items) || items.length === 0) return;
+               const slash = (arg||'').lastIndexOf('/');
+               const dirPart  = slash >= 0 ? arg.slice(0, slash+1) : '';
+               const basePart = slash >= 0 ? arg.slice(slash+1) : (arg||'');
+               const names = items.map(it => it.name);
+               const lcp = longestCommonPrefix(names);
+               if (lcp && lcp !== basePart) {
+                 $current = cmd + ' ' + (dirPart + lcp);
+               } else if (items.length === 1) {
+                 const one = items[0];
+                 $current = cmd + ' ' + (dirPart + one.name + (one.dir ? '/' : ''));
+               } else {
+                 const list = items.map(it => it.name + (it.dir ? '/' : '')).join('  ');
+                 $buffer += `<div class='line out'>${escapeHTML(list)}</div>`;
+                 const sc = el.querySelector('.screen'); requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
+               }
+             })
+             .catch(()=>{});
+             evt.preventDefault();
+           } else {
+             $current += '    ';
+             evt.preventDefault();
+           }
+         } else if (k==='ArrowUp') {
+           if ($histIndex>0) { $histIndex--; $current = $history[$histIndex] ?? ''; }
+           evt.preventDefault();
+         } else if (k==='ArrowDown') {
+           if ($histIndex < $history.length) { $histIndex++; $current = $history[$histIndex] ?? ''; }
+           evt.preventDefault();
+         }
+       "
+    >
+      <input
+        id="ghost"
+        class="ghost"
+        type="text"
+        inputmode="text"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        autofocus
+        aria-label="Hidden terminal input"
+        data-on-input="$current += evt.target.value; evt.target.value='';"
+      />
+
+      <pre
+        id="screen"
+        class="screen"
+        data-ref-screen
+        data-effect="el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${$ps1}</span><span class='input'></span><span class='cursor'>█</span></div>`; el.querySelector('.input').textContent = $current;"
+      ></pre>
+    </div>
+  </body>
+</html>
