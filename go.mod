@@ -1,4 +1,4 @@
-module github.com/puria/fswutil
+module github.com/dyne/lsget
 
 go 1.24.5
 

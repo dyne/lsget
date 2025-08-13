@@ -7,7 +7,56 @@
 
     <!-- Helpers FIRST so they're available before Datastar evaluates attributes -->
     <script>
-      // Safe HTML escaping for any server/user text we inject via innerHTML
+      // Convert ANSI color codes to HTML with CSS styling
+      window.ansiToHtml = function (s) {
+        const colors = {
+          // Reset
+          "\x1b[0m": "</span>",
+
+          // Text colors (only the ones actually used)
+          "\x1b[31m": '<span style="color: #ff0000">', // Red (archives)
+          "\x1b[32m": '<span style="color: #00ff00">', // Green (executables, audio, scripts)
+          "\x1b[33m": '<span style="color: #ffff00">', // Yellow (source code, special files)
+          "\x1b[34m": '<span style="color: #0000ff">', // Blue (directories)
+          "\x1b[35m": '<span style="color: #ff00ff">', // Magenta (images)
+          "\x1b[36m": '<span style="color: #00ffff">', // Cyan (symlinks)
+          "\x1b[37m": '<span style="color: #ffffff">', // White (documents)
+
+          // Bright text colors (only the ones actually used)
+          "\x1b[90m": '<span style="color: #808080">', // Bright Black (log/temp files)
+          "\x1b[92m": '<span style="color: #80ff80">', // Bright Green (video files)
+          "\x1b[93m": '<span style="color: #ffff80">', // Bright Yellow (web files)
+          "\x1b[96m": '<span style="color: #80ffff">', // Bright Cyan (database files)
+
+          // Text attributes (only the ones actually used)
+          "\x1b[1m": '<span style="font-weight: 400">', // Bold (directories)
+        };
+
+        let result = String(s);
+
+        // Escape HTML characters that aren't part of our spans
+        result = result.replace(/[&<>"']/g, function (m) {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#039;",
+          }[m];
+        });
+
+        // Replace ANSI codes with HTML spans
+        for (const [code, html] of Object.entries(colors)) {
+          result = result.replace(
+            new RegExp(code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
+            html,
+          );
+        }
+
+        return result;
+      };
+
+      // Safe HTML escaping for any server/user text we inject via innerHTML (fallback)
       window.escapeHTML = function (s) {
         return String(s).replace(/[&<>"']/g, function (m) {
           return {
@@ -101,7 +150,7 @@
         overflow: auto;
         text-shadow:
           0 0 2px var(--olivetti),
-          0 0 6px var(--olivetti);
+          0 0 4px var(--olivetti);
       }
       .line {
         display: block;
@@ -151,7 +200,7 @@
   <body>
     <div
       class="terminal"
-      data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to fswutils!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• rget|download FILE - download a file</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0 }"
+      data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to lsget!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l]|dir [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• get|rget|download FILE - download a file</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0 }"
       data-on-load="el.querySelector('#ghost').focus()"
       data-on-click="el.querySelector('#ghost').focus()"
       data-on-keydown="
@@ -173,7 +222,8 @@
            .then((res) => {
              const { output, download, cwd } = res || {};
              if (typeof output === 'string' && output.length) {
-               $buffer += `<div class='line out'>${escapeHTML(output)}</div>`;
+              console.log(ansiToHtml(output));
+               $buffer += `<div class='line out'>${ansiToHtml(output)}</div>`;
              }
              if (download) { startDownload(download); }
              if (cwd !== undefined) {
@@ -222,7 +272,7 @@
                  $current = cmd + ' ' + (dirPart + one.name + (one.dir ? '/' : ''));
                } else {
                  const list = items.map(it => it.name + (it.dir ? '/' : '')).join('  ');
-                 $buffer += `<div class='line out'>${escapeHTML(list)}</div>`;
+                 $buffer += `<div class='line out'>${ansiToHtml(list)}</div>`;
                  const sc = el.querySelector('.screen'); requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
                }
              })

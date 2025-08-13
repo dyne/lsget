@@ -21,6 +21,127 @@ import (
 	"unicode/utf8"
 )
 
+// ===== ANSI Color Codes =====
+
+const (
+	// Reset all attributes
+	colorReset = "\033[0m"
+
+	// Text colors
+	colorBlack   = "\033[30m"
+	colorRed     = "\033[31m"
+	colorGreen   = "\033[32m"
+	colorYellow  = "\033[33m"
+	colorBlue    = "\033[34m"
+	colorMagenta = "\033[35m"
+	colorCyan    = "\033[36m"
+	colorWhite   = "\033[37m"
+
+	// Bright text colors
+	colorBrightBlack   = "\033[90m"
+	colorBrightRed     = "\033[91m"
+	colorBrightGreen   = "\033[92m"
+	colorBrightYellow  = "\033[93m"
+	colorBrightBlue    = "\033[94m"
+	colorBrightMagenta = "\033[95m"
+	colorBrightCyan    = "\033[96m"
+	colorBrightWhite   = "\033[97m"
+
+	// Background colors
+	colorBgBlack   = "\033[40m"
+	colorBgRed     = "\033[41m"
+	colorBgGreen   = "\033[42m"
+	colorBgYellow  = "\033[43m"
+	colorBgBlue    = "\033[44m"
+	colorBgMagenta = "\033[45m"
+	colorBgCyan    = "\033[46m"
+	colorBgWhite   = "\033[47m"
+
+	// Bright background colors
+	colorBgBrightBlack   = "\033[100m"
+	colorBgBrightRed     = "\033[101m"
+	colorBgBrightGreen   = "\033[102m"
+	colorBgBrightYellow  = "\033[103m"
+	colorBgBrightBlue    = "\033[104m"
+	colorBgBrightMagenta = "\033[105m"
+	colorBgBrightCyan    = "\033[106m"
+	colorBgBrightWhite   = "\033[107m"
+
+	// Text attributes
+	colorBold      = "\033[1m"
+	colorDim       = "\033[2m"
+	colorItalic    = "\033[3m"
+	colorUnderline = "\033[4m"
+	colorBlink     = "\033[5m"
+	colorReverse   = "\033[7m"
+	colorHidden    = "\033[8m"
+	colorStrike    = "\033[9m"
+)
+
+// getFileColor returns the appropriate ANSI color code for a file based on its type and permissions
+func getFileColor(info os.FileInfo, name string) string {
+	mode := info.Mode()
+
+	// Directories
+	if mode.IsDir() {
+		return colorBlue + colorBold
+	}
+
+	// Executable files
+	if mode&0111 != 0 {
+		return colorGreen
+	}
+
+	// Symbolic links
+	if mode&os.ModeSymlink != 0 {
+		return colorCyan
+	}
+
+	// Special files
+	if mode&os.ModeNamedPipe != 0 {
+		return colorYellow
+	}
+	if mode&os.ModeSocket != 0 {
+		return colorMagenta
+	}
+	if mode&os.ModeDevice != 0 {
+		return colorYellow + colorBold
+	}
+
+	// Regular files - color by extension
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz", ".zip", ".rar", ".7z", ".gz", ".bz2", ".xz":
+		return colorRed
+	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".ico", ".tiff", ".webp":
+		return colorMagenta
+	case ".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a":
+		return colorGreen
+	case ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".m4v":
+		return colorBrightGreen
+	case ".pdf", ".doc", ".docx", ".txt", ".md", ".rst", ".tex":
+		return colorWhite
+	case ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".cpp", ".c", ".h", ".java", ".kt", ".swift":
+		return colorYellow
+	case ".html", ".htm", ".css", ".scss", ".sass", ".xml", ".json", ".yaml", ".yml":
+		return colorBrightYellow
+	case ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd":
+		return colorGreen
+	case ".sql", ".db", ".sqlite", ".sqlite3":
+		return colorBrightCyan
+	case ".log", ".tmp", ".temp", ".bak", ".backup":
+		return colorBrightBlack
+	default:
+		return colorReset
+	}
+}
+
+// colorizeName wraps a filename with appropriate ANSI color codes
+func colorizeName(info os.FileInfo, name string) string {
+	color := getFileColor(info, name)
+	return color + name + colorReset
+}
+
 // ===== Embed a fallback index.html (used only if the file isn't on disk) =====
 
 //go:embed index.html
@@ -299,8 +420,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(execResp{Output: sess.cwd, CWD: sess.cwd})
 		return
 
-	case "ls":
-		long := len(argv) > 0 && argv[0] == "-l"
+	case "ls", "dir":
+		long := false
+		showHidden := false
+		for _, arg := range argv {
+			if strings.Contains(arg, "l") {
+				long = true
+			}
+			if strings.Contains(arg, "a") {
+				showHidden = true
+			}
+		}
 		realCwd, err := s.realFromVirtual(sess.cwd)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
@@ -315,22 +445,35 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		var longs []string
 		for _, e := range ents {
 			name := e.Name()
-			if strings.HasPrefix(name, ".") {
-				continue // hide dotfiles
+			if !showHidden && strings.HasPrefix(name, ".") {
+				continue // hide dotfiles unless -a flag is used
 			}
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		if !long {
-			_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(names, "\n")})
+			// Colorized simple listing
+			var coloredNames []string
+			for _, name := range names {
+				info, err := os.Stat(filepath.Join(realCwd, name))
+				if err != nil {
+					coloredNames = append(coloredNames, name)
+					continue
+				}
+				coloredNames = append(coloredNames, colorizeName(info, name))
+			}
+			_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(coloredNames, "\n")})
 			return
 		}
+		// Colorized long listing
 		for _, name := range names {
 			info, err := os.Stat(filepath.Join(realCwd, name))
 			if err != nil {
 				continue
 			}
-			longs = append(longs, formatLong(info, name))
+			// Format the long listing with colorized filename
+			longEntry := formatLong(info, colorizeName(info, name))
+			longs = append(longs, longEntry)
 		}
 		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(longs, "\n")})
 		return
@@ -406,7 +549,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(execResp{Output: string(sample)})
 		return
 
-	case "rget", "download":
+	case "get", "rget", "download":
 		if len(argv) < 1 {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: missing operand"})
 			return
