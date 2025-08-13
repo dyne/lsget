@@ -1,12 +1,26 @@
-# Browser Shell (lsget)
+<div align="center">
 
-> **Tiny Go-powered web server with a full‑screen, neon‑themed browser terminal.**
+# lsget
 
-Serve any local directory as a mini *cloud* and poke around with familiar `pwd`, `ls`, `cd`, `cat`, and `download` commands — right from your browser. Hot‑reload your server with [Air](https://github.com/cosmtrek/air) via `task dev` for an instant Go hacking loop.
+### >**Tiny Go-powered web server with a full‑screen, neon‑themed browser terminal.**
+
+</div>
+
+<p align="center">
+  <a href="https://dyne.org">
+    <img src="https://files.dyne.org/software_by_dyne.png" width="170">
+  </a>
+</p>
+
 
 ---
+<br><br>
 
-## Features
+Serve securely any local directory as a mini *cloud* and poke around with familiar `pwd`, `ls`, `cd`, `cat`, and `get|download` commands — right from your browser. 
+For hackers: hot‑reload your server with [Air](https://github.com/cosmtrek/air) via `task dev` for an instant Go hacking loop.
+
+
+## lsget features
 
 | Capability           | Details |
 |----------------------|---------|
@@ -18,31 +32,50 @@ Serve any local directory as a mini *cloud* and poke around with familiar `pwd`,
 | Live reload          | `task dev` ⇒ [Air](https://github.com/cosmtrek/air) rebuilds `main.go` on save. |
 | Zero‑config binary   | `go run .` or `go build` produces a single executable. |
 
----
+![Screenshot](./screenshot.png)
 
-## Quick start
+# [LIVE DEMO](https://files.dyne.org/)
+
+<br>
+
+<div id="toc">
+
+### 🚩 Table of Contents
+
+- [💾 Install](#-install)
+- [🎮 Quick start](#-quick-start)
+- [🚑 Community & support](#-community--support)
+- [😍 Acknowledgements](#-acknowledgements)
+- [👤 Contributing](#-contributing)
+- [💼 License](#-license)
+
+</div>
+
+***
+## 💾 Install
+Single binary, no need to install anything!
 
 ```bash
-# Clone & enter
-git clone https://github.com/dyne/lsget.git
-cd lsget
-
-# Install Taskfile runner (once)
-brew install go-task/tap/go-task  # macOS
-# apt install task               # Debian/Ubuntu (snap)
-
-# Dev mode with hot reload
-task dev        # ⇢ http://localhost:8080
-
-# Or run the server directly
-GOFLAGS="-trimpath" go run . -addr :8080 -dir .
+# Download
+curl -sL https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') -o lsget && chmod +x lsget
 ```
 
+
+**[🔝 back to top](#toc)**
+
+***
+## 🎮 Quick start
+
+To start using lsget run the following commands
+
+```bash
+# Download and run
+curl -sL https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') -o lsget && chmod +x lsget
+./lsget
+```
 Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 
----
-
-## Configuration flags
+** Configuration flags **
 
 | Flag        | Default            | Description |
 |-------------|--------------------|-------------|
@@ -50,29 +83,75 @@ Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 | `-dir`      | `.` (cwd)          | Directory to expose as `/`. |
 | `-catmax`   | `262144` (256 KiB) | Max bytes printable via `cat` & completion filter. |
 
----
 
-## Project structure
+**[🔝 back to top](#toc)**
 
-```text
-main.go        # Go HTTP server / API
-index.html     # DataStar UI (embedded + served from disk if present)
-Taskfile.yml   # Taskfile targets (install‑air, dev)
-```
+***
+## 🚑 Community & support
 
----
+**[📝 Documentation](#toc)** - Getting started and more.
 
-## Contributing
+**[🌱 Ecosystem](https://github.com/dyne/ecosystem)** - Plugins, resources, and more.
 
-1. Fork / branch from `main`.
-2. `git commit -s` your changes.
-3. `gh pr create -f` to open a PR.
+**[🚩 Issues](../../issues)** - Bugs end errors you encounter using lsget.
 
-We ♥️ issues and creative colour schemes — PRs welcome!
+**[💬 Discussions](../../discussions)** - Get help, ask questions, request features, and discuss lsget.
 
----
+**[[] Matrix](https://socials.dyne.org/matrix)** - Hanging out with the community.
 
-## License
+**[🗣️ Discord](https://socials.dyne.org/discord)** - Hanging out with the community.
 
-MIT © 2025 Your Name
+**[🪁 Telegram](https://socials.dyne.org/telegram)** - Hanging out with the community.
 
+**[📖 Example](https://github.com/lsget/example)** - An example repository that uses lsget.
+
+**[🔝 back to top](#toc)**
+
+***
+## 😍 Acknowledgements
+
+<a href="https://dyne.org">
+  <img src="https://files.dyne.org/software_by_dyne.png" width="222">
+</a>
+
+
+Copyleft 🄯2025 by [Dyne.org](https://www.dyne.org) foundation, Amsterdam
+
+Designed, written and maintained by Puria Nafisi Azizi.
+
+**[🔝 back to top](#toc)**
+
+***
+## 👤 Contributing
+
+Please first take a look at the [Dyne.org - Contributor License Agreement](CONTRIBUTING.md) then
+
+1.  🔀 [FORK IT](../../fork)
+2.  Create your feature branch `git checkout -b feature/branch`
+3.  Commit your changes `git commit -am 'feat: New feature\ncloses #398'`
+4.  Push to the branch `git push origin feature/branch`
+5.  Create a new Pull Request `gh pr create -f`
+6.  🙏 Thank you
+
+
+**[🔝 back to top](#toc)**
+
+***
+## 💼 License
+    lsget - **Tiny Go-powered web server with a full‑screen, neon‑themed browser terminal.**
+    Copyleft 🄯2025 Dyne.org foundation, Amsterdam
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as
+    published by the Free Software Foundation, either version 3 of the
+    License, or (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+**[🔝 back to top](#toc)**

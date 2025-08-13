@@ -21,6 +21,8 @@ import (
 	"unicode/utf8"
 )
 
+var version = "dev"
+
 // ===== ANSI Color Codes =====
 
 const (
@@ -747,11 +749,17 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	var (
-		addr   = flag.String("addr", "localhost:8080", "address to listen on")
-		dir    = flag.String("dir", ".", "directory to expose as root")
-		catMax = flag.Int64("catmax", 256*1024, "max bytes printable via `cat` and used by completion")
+		printVersion = flag.Bool("version", false, "Print the version of this software and exits")
+		addr         = flag.String("addr", "localhost:8080", "address to listen on")
+		dir          = flag.String("dir", ".", "directory to expose as root")
+		catMax       = flag.Int64("catmax", 256*1024, "max bytes printable via `cat` and used by completion")
 	)
 	flag.Parse()
+
+	if *printVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	rootAbs, err := filepath.Abs(*dir)
 	if err != nil {
