@@ -13,3 +13,7 @@ tasks:
     cmds:
       - go tool air # Air will watch *.go by default, thus including main.go
     interactive: true
+  lint:
+    desc: Run golangci-lint on the codebase
+    cmds:
+      - golangci-lint run ./...

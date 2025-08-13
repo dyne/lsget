@@ -30,7 +30,6 @@ const (
 	colorReset = "\033[0m"
 
 	// Text colors
-	colorBlack   = "\033[30m"
 	colorRed     = "\033[31m"
 	colorGreen   = "\033[32m"
 	colorYellow  = "\033[33m"
@@ -40,44 +39,13 @@ const (
 	colorWhite   = "\033[37m"
 
 	// Bright text colors
-	colorBrightBlack   = "\033[90m"
-	colorBrightRed     = "\033[91m"
-	colorBrightGreen   = "\033[92m"
-	colorBrightYellow  = "\033[93m"
-	colorBrightBlue    = "\033[94m"
-	colorBrightMagenta = "\033[95m"
-	colorBrightCyan    = "\033[96m"
-	colorBrightWhite   = "\033[97m"
-
-	// Background colors
-	colorBgBlack   = "\033[40m"
-	colorBgRed     = "\033[41m"
-	colorBgGreen   = "\033[42m"
-	colorBgYellow  = "\033[43m"
-	colorBgBlue    = "\033[44m"
-	colorBgMagenta = "\033[45m"
-	colorBgCyan    = "\033[46m"
-	colorBgWhite   = "\033[47m"
-
-	// Bright background colors
-	colorBgBrightBlack   = "\033[100m"
-	colorBgBrightRed     = "\033[101m"
-	colorBgBrightGreen   = "\033[102m"
-	colorBgBrightYellow  = "\033[103m"
-	colorBgBrightBlue    = "\033[104m"
-	colorBgBrightMagenta = "\033[105m"
-	colorBgBrightCyan    = "\033[106m"
-	colorBgBrightWhite   = "\033[107m"
+	colorBrightBlack  = "\033[90m"
+	colorBrightGreen  = "\033[92m"
+	colorBrightYellow = "\033[93m"
+	colorBrightCyan   = "\033[96m"
 
 	// Text attributes
-	colorBold      = "\033[1m"
-	colorDim       = "\033[2m"
-	colorItalic    = "\033[3m"
-	colorUnderline = "\033[4m"
-	colorBlink     = "\033[5m"
-	colorReverse   = "\033[7m"
-	colorHidden    = "\033[8m"
-	colorStrike    = "\033[9m"
+	colorBold = "\033[1m"
 )
 
 // getFileColor returns the appropriate ANSI color code for a file based on its type and permissions
@@ -253,15 +221,6 @@ func (s *server) realFromVirtual(v string) (string, error) {
 		return "", errors.New("permission denied")
 	}
 	return abs, nil
-}
-
-// check a real path stays under root (used when building children)
-func (s *server) ensureUnderRoot(absPath string) error {
-	rel, err := filepath.Rel(s.rootAbs, absPath)
-	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
-		return errors.New("permission denied")
-	}
-	return nil
 }
 
 // simple args parser: supports quotes ("", ”) and backslash escapes inside quotes
