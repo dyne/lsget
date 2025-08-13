@@ -2,7 +2,7 @@
 
 # lsget
 
-### >**Tiny Go-powered web server with a full‑screen, neon‑themed browser terminal.**
+### Tiny Go-powered web server with a full‑screen, neon‑themed browser terminal.
 
 </div>
 
@@ -75,7 +75,7 @@ curl -sL https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname | 
 ```
 Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 
-** Configuration flags **
+### Configuration flags
 
 | Flag        | Default            | Description |
 |-------------|--------------------|-------------|
@@ -91,11 +91,7 @@ Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 
 **[📝 Documentation](#toc)** - Getting started and more.
 
-**[🌱 Ecosystem](https://github.com/dyne/ecosystem)** - Plugins, resources, and more.
-
 **[🚩 Issues](../../issues)** - Bugs end errors you encounter using lsget.
-
-**[💬 Discussions](../../discussions)** - Get help, ask questions, request features, and discuss lsget.
 
 **[[] Matrix](https://socials.dyne.org/matrix)** - Hanging out with the community.
 
@@ -103,7 +99,6 @@ Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 
 **[🪁 Telegram](https://socials.dyne.org/telegram)** - Hanging out with the community.
 
-**[📖 Example](https://github.com/lsget/example)** - An example repository that uses lsget.
 
 **[🔝 back to top](#toc)**
 
@@ -115,7 +110,7 @@ Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 </a>
 
 
-Copyleft 🄯2025 by [Dyne.org](https://www.dyne.org) foundation, Amsterdam
+Copyleft 🄯 2025 by [Dyne.org](https://www.dyne.org) foundation, Amsterdam
 
 Designed, written and maintained by Puria Nafisi Azizi.
 
