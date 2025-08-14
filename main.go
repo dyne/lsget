@@ -608,7 +608,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 // buildTree recursively builds a tree representation of the directory structure
 func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, showHidden bool, maxDepth, currentDepth int) (int, int) {
-	if maxDepth >= 0 && currentDepth > maxDepth {
+	if maxDepth >= 0 && currentDepth >= maxDepth {
 		return 0, 0
 	}
 	
