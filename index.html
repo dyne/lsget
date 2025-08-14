@@ -88,6 +88,12 @@
         .then((cfg) => {
           if (cfg && typeof cfg.catMax === "number")
             window.CAT_MAX = cfg.catMax;
+          if (cfg && typeof cfg.readme === "string") {
+            window.INIT_README = cfg.readme;
+            window.dispatchEvent(
+              new CustomEvent("initreadme", { detail: cfg.readme })
+            );
+          }
         })
         .catch(() => {});
       // Start a download by programmatically clicking an <a>
@@ -102,6 +108,8 @@
         } catch {}
       };
     </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <!-- Datastar: Alpine-like data-* reactivity -->
     <script
@@ -136,11 +144,16 @@
           "DejaVu Sans Mono",
           monospace;
       }
+      .layout {
+        display: flex;
+        height: 100%;
+      }
       .terminal {
         height: 100%;
         padding: 1rem;
         outline: none;
         display: flex;
+        flex: 2;
       }
       .screen {
         margin: 0;
@@ -151,6 +164,12 @@
         text-shadow:
           0 0 2px var(--olivetti),
           0 0 4px var(--olivetti);
+      }
+      .readme {
+        flex: 1;
+        padding: 1rem;
+        overflow: auto;
+        border-left: 1px solid #333;
       }
       .line {
         display: block;
@@ -198,13 +217,20 @@
       }
     </style>
   </head>
-  <body>
-    <div
-      class="terminal"
-      data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to lsget!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l]|dir [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• get|rget|download FILE - download a file</div><div class=\'line out\'>• tree [-L<DEPTH>] [-a] - directory structure</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0 }"
-      data-on-load="el.querySelector('#ghost').focus()"
-      data-on-click="el.querySelector('#ghost').focus()"
-      data-on-keydown="
+    <body>
+      <div class="layout" data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to lsget!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l]|dir [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• get|rget|download FILE - download a file</div><div class=\'line out\'></div><div class=\'line out\'>• tree [-L<DEPTH>] [-a] - directory structure</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0, readme: '' }">
+        <div
+          class="terminal"
+          data-on-load="
+            el.querySelector('#ghost').focus();
+            const init = window.INIT_README || '';
+            $readme = init ? marked.parse(init) : '';
+            window.addEventListener('initreadme', (e) => {
+              $readme = e.detail ? marked.parse(e.detail) : '';
+            });
+          "
+          data-on-click="el.querySelector('#ghost').focus()"
+          data-on-keydown="
          const k=evt.key;
          if (k==='Enter') {
            const cmd = $current;
@@ -220,18 +246,21 @@
              body: JSON.stringify({ input: cmd })
            })
            .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-           .then((res) => {
-             const { output, download, cwd } = res || {};
+             .then((res) => {
+               const { output, download, cwd } = res || {};
              if (typeof output === 'string' && output.length) {
               console.log(ansiToHtml(output));
                $buffer += `<div class='line out'>${ansiToHtml(output)}</div>`;
              }
              if (download) { startDownload(download); }
-             if (cwd !== undefined) {
-                $cwd = cwd;
-                $ps1 = `guest@browser:${cwd}$ `;
-             }
-             requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
+               if (cwd !== undefined) {
+                  $cwd = cwd;
+                  $ps1 = `guest@browser:${cwd}$ `;
+               }
+               if (res && Object.prototype.hasOwnProperty.call(res, 'readme')) {
+                 $readme = res.readme ? marked.parse(res.readme) : '';
+               }
+               requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
            })
            .catch(err => {
              $buffer += `<div class='line out'>error: ${escapeHTML(String(err))}</div>`;
@@ -310,7 +339,9 @@
         class="screen"
         data-ref-screen
         data-effect="el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${$ps1}</span><span class='input'></span><span class='cursor'>█</span></div>`; el.querySelector('.input').textContent = $current;"
-      ></pre>
+        ></pre>
+      </div>
+      <div id="readme" class="readme" data-effect="el.innerHTML = $readme"></div>
     </div>
   </body>
 </html>
