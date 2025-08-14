@@ -653,7 +653,6 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 		}
 		
 		// Get file info for colorization
-		fullPath := filepath.Join(dirPath, name)
 		info, err := entry.Info()
 		if err != nil {
 			continue
