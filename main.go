@@ -548,7 +548,25 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(arg, "-L") && len(arg) > 2 {
 					// Simple depth parsing for -L<number>
 					depthStr := arg[2:]
-					if d, err := fmt.Sscanf(depthStr, "%d", &maxDepth); d != 1 || err != nil {
+		for i := 0; i < len(argv); i++ {
+			arg := argv[i]
+			if strings.HasPrefix(arg, "-") {
+				if strings.Contains(arg, "a") {
+					showHidden = true
+				}
+				if arg == "-L" {
+					// Handle -L <number>
+					if i+1 < len(argv) {
+						depthStr := argv[i+1]
+						if _, err := fmt.Sscanf(depthStr, "%d", &maxDepth); err != nil {
+							maxDepth = -1
+						}
+						i++ // skip the next argument since it's consumed
+					}
+				} else if strings.HasPrefix(arg, "-L") && len(arg) > 2 {
+					// Handle -L<number>
+					depthStr := arg[2:]
+					if _, err := fmt.Sscanf(depthStr, "%d", &maxDepth); err != nil {
 						maxDepth = -1
 					}
 				}
