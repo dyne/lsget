@@ -560,9 +560,136 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		url := "/api/download?path=" + urlEscapeVirtual(vp)
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
 		return
+
+	case "tree":
+		// Parse options
+		showHidden := false
+		maxDepth := -1 // unlimited by default
+		target := sess.cwd
+
+		for _, arg := range argv {
+			if strings.HasPrefix(arg, "-") {
+				if strings.Contains(arg, "a") {
+					showHidden = true
+				}
+				if strings.HasPrefix(arg, "-L") && len(arg) > 2 {
+					// Simple depth parsing for -L<number>
+					depthStr := arg[2:]
+					if d, err := fmt.Sscanf(depthStr, "%d", &maxDepth); d != 1 || err != nil {
+						maxDepth = -1
+					}
+				}
+			} else {
+				// Directory argument
+				target = joinVirtual(sess.cwd, arg)
+			}
+		}
+
+		realTarget, err := s.realFromVirtual(target)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: permission denied"})
+			return
+		}
+
+		info, err := os.Stat(realTarget)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: no such file or directory"})
+			return
+		}
+
+		if !info.IsDir() {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: not a directory"})
+			return
+		}
+
+		var result strings.Builder
+		dirCount, fileCount := s.buildTree(&result, realTarget, "", showHidden, maxDepth, 0)
+
+		// Add summary
+		result.WriteString(fmt.Sprintf("\n%d directories, %d files", dirCount, fileCount))
+
+		_ = json.NewEncoder(w).Encode(execResp{Output: result.String()})
+		return
 	}
 
 	_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("sh: %s: command not found", cmd)})
+}
+
+// buildTree recursively builds a tree representation of the directory structure
+func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, showHidden bool, maxDepth, currentDepth int) (int, int) {
+	if maxDepth >= 0 && currentDepth >= maxDepth {
+		return 0, 0
+	}
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return 0, 0
+	}
+
+	// Filter and sort entries
+	var validEntries []os.DirEntry
+	for _, entry := range entries {
+		name := entry.Name()
+		if !showHidden && strings.HasPrefix(name, ".") {
+			continue
+		}
+		validEntries = append(validEntries, entry)
+	}
+
+	// Sort: directories first, then files, alphabetically within each group
+	sort.Slice(validEntries, func(i, j int) bool {
+		iDir := validEntries[i].IsDir()
+		jDir := validEntries[j].IsDir()
+		if iDir != jDir {
+			return iDir && !jDir
+		}
+		return validEntries[i].Name() < validEntries[j].Name()
+	})
+
+	dirCount := 0
+	fileCount := 0
+
+	for i, entry := range validEntries {
+		name := entry.Name()
+		isLast := i == len(validEntries)-1
+
+		// Build the tree symbols
+		var connector string
+		if isLast {
+			connector = "└── "
+		} else {
+			connector = "├── "
+		}
+
+		// Get file info for colorization
+		fullPath := filepath.Join(dirPath, name)
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		// Add colorized name
+		coloredName := colorizeName(info, name)
+		result.WriteString(prefix + connector + coloredName + "\n")
+
+		if entry.IsDir() {
+			dirCount++
+			// Recursively process subdirectories
+			var newPrefix string
+			if isLast {
+				newPrefix = prefix + "    "
+			} else {
+				newPrefix = prefix + "│   "
+			}
+			subDirCount, subFileCount := s.buildTree(result, fullPath, newPrefix, showHidden, maxDepth, currentDepth+1)
+			dirCount += subDirCount
+			fileCount += subFileCount
+		} else {
+			fileCount++
+		}
+	}
+
+	return dirCount, fileCount
 }
 
 func urlEscapeVirtual(v string) string {
