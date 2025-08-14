@@ -281,7 +281,6 @@ func parseArgs(line string) []string {
 			}
 			continue
 		}
-						excludeFile  = flag.String("exclude-file", "", "file containing newline-terminated list of filenames to exclude at any level")
 		switch c {
 		case ' ', '\t', '\n':
 			if buf.Len() > 0 {
@@ -290,40 +289,8 @@ func parseArgs(line string) []string {
 			}
 		case '\'':
 			inSingle = true
-		case '"':
-			// Read exclude file if provided
-			excludeSet = make(map[string]struct{})
-			if *excludeFile != "" {
-				f, err := os.Open(*excludeFile)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "failed to open exclude file: %v\n", err)
-					os.Exit(1)
-				}
-				defer f.Close()
-				buf := make([]byte, 4096)
-				var content []byte
-				for {
-					n, err := f.Read(buf)
-					if n > 0 {
-						content = append(content, buf[:n]...)
-					}
-					if err == io.EOF {
-						break
-					}
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "error reading exclude file: %v\n", err)
-						os.Exit(1)
-					}
-				}
-				lines := strings.Split(string(content), "\n")
-				for _, line := range lines {
-					line = strings.TrimSpace(line)
-					if line != "" {
-						excludeSet[line] = struct{}{}
-					}
-				}
-			}
-			inDouble = true
+	       case '"':
+		       inDouble = true
 		default:
 			buf.WriteByte(c)
 		}
