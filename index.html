@@ -162,6 +162,7 @@
       }
       .out {
         opacity: 0.85;
+        line-height: 1.18;
       }
       .cursor {
         display: inline-block;
@@ -200,7 +201,7 @@
   <body>
     <div
       class="terminal"
-      data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to lsget!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l]|dir [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• get|rget|download FILE - download a file</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0 }"
+      data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to lsget!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l]|dir [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• get|rget|download FILE - download a file</div><div class=\'line out\'>• tree [-L<DEPTH>] [-a] - directory structure</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0 }"
       data-on-load="el.querySelector('#ghost').focus()"
       data-on-click="el.querySelector('#ghost').focus()"
       data-on-keydown="
