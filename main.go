@@ -23,6 +23,9 @@ import (
 
 var version = "dev"
 
+// Exclude set for filenames
+var excludeSet map[string]struct{}
+
 // ===== ANSI Color Codes =====
 
 const (
@@ -278,6 +281,7 @@ func parseArgs(line string) []string {
 			}
 			continue
 		}
+						excludeFile  = flag.String("exclude-file", "", "file containing newline-terminated list of filenames to exclude at any level")
 		switch c {
 		case ' ', '\t', '\n':
 			if buf.Len() > 0 {
@@ -287,6 +291,38 @@ func parseArgs(line string) []string {
 		case '\'':
 			inSingle = true
 		case '"':
+			// Read exclude file if provided
+			excludeSet = make(map[string]struct{})
+			if *excludeFile != "" {
+				f, err := os.Open(*excludeFile)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to open exclude file: %v\n", err)
+					os.Exit(1)
+				}
+				defer f.Close()
+				buf := make([]byte, 4096)
+				var content []byte
+				for {
+					n, err := f.Read(buf)
+					if n > 0 {
+						content = append(content, buf[:n]...)
+					}
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error reading exclude file: %v\n", err)
+						os.Exit(1)
+					}
+				}
+				lines := strings.Split(string(content), "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						excludeSet[line] = struct{}{}
+					}
+				}
+			}
 			inDouble = true
 		default:
 			buf.WriteByte(c)
@@ -405,63 +441,66 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(execResp{Output: sess.cwd, CWD: sess.cwd})
 		return
 
-	case "ls", "dir":
-		long := false
-		showHidden := false
-		for _, arg := range argv {
-			if strings.Contains(arg, "l") {
-				long = true
-			}
-			if strings.Contains(arg, "a") {
-				showHidden = true
-			}
-		}
-		realCwd, err := s.realFromVirtual(sess.cwd)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
-			return
-		}
-		ents, err := os.ReadDir(realCwd)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
-			return
-		}
-		var names []string
-		var longs []string
-		for _, e := range ents {
-			name := e.Name()
-			if !showHidden && strings.HasPrefix(name, ".") {
-				continue // hide dotfiles unless -a flag is used
-			}
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		if !long {
-			// Colorized simple listing
-			var coloredNames []string
-			for _, name := range names {
-				info, err := os.Stat(filepath.Join(realCwd, name))
-				if err != nil {
-					coloredNames = append(coloredNames, name)
-					continue
-				}
-				coloredNames = append(coloredNames, colorizeName(info, name))
-			}
-			_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(coloredNames, "\n")})
-			return
-		}
-		// Colorized long listing
-		for _, name := range names {
-			info, err := os.Stat(filepath.Join(realCwd, name))
-			if err != nil {
-				continue
-			}
-			// Format the long listing with colorized filename
-			longEntry := formatLong(info, colorizeName(info, name))
-			longs = append(longs, longEntry)
-		}
-		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(longs, "\n")})
-		return
+       case "ls", "dir":
+	       long := false
+	       showHidden := false
+	       for _, arg := range argv {
+		       if strings.Contains(arg, "l") {
+			       long = true
+		       }
+		       if strings.Contains(arg, "a") {
+			       showHidden = true
+		       }
+	       }
+	       realCwd, err := s.realFromVirtual(sess.cwd)
+	       if err != nil {
+		       _ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
+		       return
+	       }
+	       ents, err := os.ReadDir(realCwd)
+	       if err != nil {
+		       _ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
+		       return
+	       }
+	       var names []string
+	       var longs []string
+	       for _, e := range ents {
+		       name := e.Name()
+		       if !showHidden && strings.HasPrefix(name, ".") {
+			       continue // hide dotfiles unless -a flag is used
+		       }
+		       if _, excluded := excludeSet[name]; excluded {
+			       continue // skip excluded
+		       }
+		       names = append(names, name)
+	       }
+	       sort.Strings(names)
+	       if !long {
+		       // Colorized simple listing
+		       var coloredNames []string
+		       for _, name := range names {
+			       info, err := os.Stat(filepath.Join(realCwd, name))
+			       if err != nil {
+				       coloredNames = append(coloredNames, name)
+				       continue
+			       }
+			       coloredNames = append(coloredNames, colorizeName(info, name))
+		       }
+		       _ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(coloredNames, "\n")})
+		       return
+	       }
+	       // Colorized long listing
+	       for _, name := range names {
+		       info, err := os.Stat(filepath.Join(realCwd, name))
+		       if err != nil {
+			       continue
+		       }
+		       // Format the long listing with colorized filename
+		       longEntry := formatLong(info, colorizeName(info, name))
+		       longs = append(longs, longEntry)
+	       }
+	       _ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(longs, "\n")})
+	       return
 
 	case "cd":
 		target := "/"
@@ -626,12 +665,15 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 
 	// Filter and sort entries
 	var validEntries []os.DirEntry
-	for _, entry := range entries {
-		name := entry.Name()
-		if !showHidden && strings.HasPrefix(name, ".") {
-			continue
-		}
-		validEntries = append(validEntries, entry)
+       for _, entry := range entries {
+	       name := entry.Name()
+	       if !showHidden && strings.HasPrefix(name, ".") {
+		       continue
+	       }
+	       if _, excluded := excludeSet[name]; excluded {
+		       continue
+	       }
+	       validEntries = append(validEntries, entry)
 	}
 
 	// Sort: directories first, then files, alphabetically within each group
@@ -796,54 +838,57 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	maxItems := 200
 	items := make([]completeItem, 0, 16)
 
-	for _, e := range ents {
-		name := e.Name()
-		if !strings.HasPrefix(name, basePart) {
-			continue
-		}
-		if !showHidden && strings.HasPrefix(name, ".") {
-			continue
-		}
+       for _, e := range ents {
+	       name := e.Name()
+	       if !strings.HasPrefix(name, basePart) {
+		       continue
+	       }
+	       if !showHidden && strings.HasPrefix(name, ".") {
+		       continue
+	       }
+	       if _, excluded := excludeSet[name]; excluded {
+		       continue
+	       }
 
-		isDir := e.IsDir()
-		if req.DirsOnly && !isDir {
-			continue
-		}
-		if req.FilesOnly && isDir {
-			continue
-		}
+	       isDir := e.IsDir()
+	       if req.DirsOnly && !isDir {
+		       continue
+	       }
+	       if req.FilesOnly && isDir {
+		       continue
+	       }
 
-		if req.TextOnly || req.MaxSize > 0 {
-			if !isDir {
-				info, err := e.Info()
-				if err != nil {
-					continue
-				}
-				if req.MaxSize > 0 && info.Size() > req.MaxSize {
-					continue
-				}
-				if req.TextOnly {
-					// read a small sample to check if it looks like text
-					fp := filepath.Join(baseR, name)
-					f, err := os.Open(fp)
-					if err != nil {
-						continue
-					}
-					sample := make([]byte, 4096)
-					n, _ := f.Read(sample)
-					_ = f.Close()
-					if !looksText(sample[:n]) {
-						continue
-					}
-				}
-			}
-		}
+	       if req.TextOnly || req.MaxSize > 0 {
+		       if !isDir {
+			       info, err := e.Info()
+			       if err != nil {
+				       continue
+			       }
+			       if req.MaxSize > 0 && info.Size() > req.MaxSize {
+				       continue
+			       }
+			       if req.TextOnly {
+				       // read a small sample to check if it looks like text
+				       fp := filepath.Join(baseR, name)
+				       f, err := os.Open(fp)
+				       if err != nil {
+					       continue
+				       }
+				       sample := make([]byte, 4096)
+				       n, _ := f.Read(sample)
+				       _ = f.Close()
+				       if !looksText(sample[:n]) {
+					       continue
+				       }
+			       }
+		       }
+	       }
 
-		items = append(items, completeItem{Name: name, Dir: isDir})
-		if len(items) >= maxItems {
-			break
-		}
-	}
+	       items = append(items, completeItem{Name: name, Dir: isDir})
+	       if len(items) >= maxItems {
+		       break
+	       }
+       }
 
 	// Sort: directories first, then files; alphabetical within each
 	sort.Slice(items, func(i, j int) bool {
