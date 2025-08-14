@@ -539,7 +539,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		showHidden := false
 		maxDepth := -1 // unlimited by default
 		target := sess.cwd
-		
+
 		for _, arg := range argv {
 			if strings.HasPrefix(arg, "-") {
 				if strings.Contains(arg, "a") {
@@ -548,25 +548,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(arg, "-L") && len(arg) > 2 {
 					// Simple depth parsing for -L<number>
 					depthStr := arg[2:]
-		for i := 0; i < len(argv); i++ {
-			arg := argv[i]
-			if strings.HasPrefix(arg, "-") {
-				if strings.Contains(arg, "a") {
-					showHidden = true
-				}
-				if arg == "-L" {
-					// Handle -L <number>
-					if i+1 < len(argv) {
-						depthStr := argv[i+1]
-						if _, err := fmt.Sscanf(depthStr, "%d", &maxDepth); err != nil {
-							maxDepth = -1
-						}
-						i++ // skip the next argument since it's consumed
-					}
-				} else if strings.HasPrefix(arg, "-L") && len(arg) > 2 {
-					// Handle -L<number>
-					depthStr := arg[2:]
-					if _, err := fmt.Sscanf(depthStr, "%d", &maxDepth); err != nil {
+					if d, err := fmt.Sscanf(depthStr, "%d", &maxDepth); d != 1 || err != nil {
 						maxDepth = -1
 					}
 				}
@@ -575,30 +557,30 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				target = joinVirtual(sess.cwd, arg)
 			}
 		}
-		
+
 		realTarget, err := s.realFromVirtual(target)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: permission denied"})
 			return
 		}
-		
+
 		info, err := os.Stat(realTarget)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: no such file or directory"})
 			return
 		}
-		
+
 		if !info.IsDir() {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: not a directory"})
 			return
 		}
-		
+
 		var result strings.Builder
 		dirCount, fileCount := s.buildTree(&result, realTarget, "", showHidden, maxDepth, 0)
-		
+
 		// Add summary
 		result.WriteString(fmt.Sprintf("\n%d directories, %d files", dirCount, fileCount))
-		
+
 		_ = json.NewEncoder(w).Encode(execResp{Output: result.String()})
 		return
 	}
@@ -611,12 +593,12 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 	if maxDepth >= 0 && currentDepth >= maxDepth {
 		return 0, 0
 	}
-	
+
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return 0, 0
 	}
-	
+
 	// Filter and sort entries
 	var validEntries []os.DirEntry
 	for _, entry := range entries {
@@ -626,7 +608,7 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 		}
 		validEntries = append(validEntries, entry)
 	}
-	
+
 	// Sort: directories first, then files, alphabetically within each group
 	sort.Slice(validEntries, func(i, j int) bool {
 		iDir := validEntries[i].IsDir()
@@ -636,14 +618,14 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 		}
 		return validEntries[i].Name() < validEntries[j].Name()
 	})
-	
+
 	dirCount := 0
 	fileCount := 0
-	
+
 	for i, entry := range validEntries {
 		name := entry.Name()
 		isLast := i == len(validEntries)-1
-		
+
 		// Build the tree symbols
 		var connector string
 		if isLast {
@@ -651,17 +633,18 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 		} else {
 			connector = "├── "
 		}
-		
+
 		// Get file info for colorization
+		fullPath := filepath.Join(dirPath, name)
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
-		
+
 		// Add colorized name
 		coloredName := colorizeName(info, name)
 		result.WriteString(prefix + connector + coloredName + "\n")
-		
+
 		if entry.IsDir() {
 			dirCount++
 			// Recursively process subdirectories
@@ -678,7 +661,7 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 			fileCount++
 		}
 	}
-	
+
 	return dirCount, fileCount
 }
 
