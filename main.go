@@ -112,6 +112,27 @@ func colorizeName(info os.FileInfo, name string) string {
 	return color + name + colorReset
 }
 
+// readReadme returns the raw contents of README.md if present in dir.
+func readReadme(dir string) string {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		if strings.EqualFold(e.Name(), "README.md") {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				return ""
+			}
+			return string(b)
+		}
+	}
+	return ""
+}
+
 // ===== Embed a fallback index.html (used only if the file isn't on disk) =====
 
 //go:embed index.html
@@ -313,9 +334,10 @@ type execReq struct {
 }
 
 type execResp struct {
-	Output   string `json:"output"`
-	Download string `json:"download,omitempty"`
-	CWD      string `json:"cwd,omitempty"`
+	Output   string  `json:"output"`
+	Download string  `json:"download,omitempty"`
+	CWD      string  `json:"cwd,omitempty"`
+	Readme   *string `json:"readme,omitempty"`
 }
 
 type completeReq struct {
@@ -336,7 +358,8 @@ type completeResp struct {
 }
 
 type configResp struct {
-	CatMax int64 `json:"catMax"`
+	CatMax int64   `json:"catMax"`
+	Readme *string `json:"readme,omitempty"`
 }
 
 // ===== Handlers =====
@@ -356,7 +379,8 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax})
+	readme := readReadme(s.rootAbs)
+	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme})
 }
 
 func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -463,7 +487,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.cwd = newV
-		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd})
+		readme := readReadme(newReal)
+		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme})
 		return
 
 	case "cat":
