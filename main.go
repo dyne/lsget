@@ -48,6 +48,22 @@ const (
 	colorBold = "\033[1m"
 )
 
+// Help message displayed on startup and via help command
+const helpMessage = `Welcome to lsget!
+Type one of the commands below to get started.
+
+Available commands:
+• help - print this message again
+• pwd - print working directory
+• ls [-l]|dir [-l] - list files
+• cd DIR - change directory
+• cat FILE - view a text file
+• get|rget|download FILE - download a file
+• tree [-L<DEPTH>] [-a] - directory structure
+
+Hint: to autocomplete filenames and dir use <Tab>
+`
+
 // getFileColor returns the appropriate ANSI color code for a file based on its type and permissions
 func getFileColor(info os.FileInfo, name string) string {
 	mode := info.Mode()
@@ -365,17 +381,47 @@ type configResp struct {
 // ===== Handlers =====
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	var htmlContent []byte
+
 	// Serve from disk if available so you can iterate quickly.
 	if b, err := os.ReadFile("index.html"); err == nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(b)
-		return
+		htmlContent = b
+	} else {
+		// Fallback to embedded.
+		htmlContent = embeddedIndex
 	}
-	// Fallback to embedded.
+
+	// Replace placeholder with actual help message
+	processedHTML := s.processHTMLTemplate(htmlContent)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(embeddedIndex)
+	_, _ = w.Write(processedHTML)
+}
+
+// processHTMLTemplate replaces placeholders in HTML with dynamic content
+func (s *server) processHTMLTemplate(htmlContent []byte) []byte {
+	// Split into lines and wrap each in HTML div tags
+	lines := strings.Split(strings.TrimSpace(helpMessage), "\n")
+	var htmlLines []string
+	for _, line := range lines {
+		if line == "" {
+			htmlLines = append(htmlLines, "<div class=\\\"line out\\\"></div>")
+		} else {
+			// Escape double quotes for JavaScript double-quoted string
+			escapedLine := strings.ReplaceAll(line, "\\", "\\\\")       // Escape backslashes first
+			escapedLine = strings.ReplaceAll(escapedLine, "\"", "\\\"") // Escape double quotes
+			htmlLines = append(htmlLines, fmt.Sprintf("<div class=\\\"line out\\\">%s</div>", escapedLine))
+		}
+	}
+	htmlLines = append(htmlLines, "<br/>")
+
+	// Join all HTML lines into a single string (no newlines between them)
+	formattedHelpMessage := strings.Join(htmlLines, "")
+
+	// Replace the placeholder in HTML
+	result := strings.ReplaceAll(string(htmlContent), "{{HELP_MESSAGE}}", formattedHelpMessage)
+	return []byte(result)
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -403,6 +449,10 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	switch cmd {
 	case "pwd":
 		_ = json.NewEncoder(w).Encode(execResp{Output: sess.cwd, CWD: sess.cwd})
+		return
+
+	case "help":
+		_ = json.NewEncoder(w).Encode(execResp{Output: helpMessage})
 		return
 
 	case "ls", "dir":
