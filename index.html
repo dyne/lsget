@@ -91,7 +91,7 @@
           if (cfg && typeof cfg.readme === "string") {
             window.INIT_README = cfg.readme;
             window.dispatchEvent(
-              new CustomEvent("initreadme", { detail: cfg.readme })
+              new CustomEvent("initreadme", { detail: cfg.readme }),
             );
           }
         })
@@ -217,11 +217,14 @@
       }
     </style>
   </head>
-    <body>
-      <div class="layout" data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to lsget!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l]|dir [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• get|rget|download FILE - download a file</div><div class=\'line out\'></div><div class=\'line out\'>• tree [-L<DEPTH>] [-a] - directory structure</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0, readme: '' }">
-        <div
-          class="terminal"
-          data-on-load="
+  <body>
+    <div
+      class="layout"
+      data-signals="{ ps1: 'guest@browser:~$ ', cwd: '~', current: '', buffer: '<div class=\'line out\'>Welcome to lsget!</div><div class=\'line out\'>Type one of the commands below to get started.</div><div class=\'line out\'></div><div class=\'line out\'>Available commands:</div><div class=\'line out\'>• pwd - print working directory</div><div class=\'line out\'>• ls [-l]|dir [-l] - list files</div><div class=\'line out\'>• cd DIR - change directory</div><div class=\'line out\'>• cat FILE - view a text file</div><div class=\'line out\'>• get|rget|download FILE - download a file</div><div class=\'line out\'></div><div class=\'line out\'>• tree [-L<DEPTH>] [-a] - directory structure</div><div class=\'line out\'></div><br/>', history: [], histIndex: 0, readme: '' }"
+    >
+      <div
+        class="terminal"
+        data-on-load="
             el.querySelector('#ghost').focus();
             const init = window.INIT_README || '';
             $readme = init ? marked.parse(init) : '';
@@ -229,8 +232,8 @@
               $readme = e.detail ? marked.parse(e.detail) : '';
             });
           "
-          data-on-click="el.querySelector('#ghost').focus()"
-          data-on-keydown="
+        data-on-click="el.querySelector('#ghost').focus()"
+        data-on-keydown="
          const k=evt.key;
          if (k==='Enter') {
            const cmd = $current;
@@ -277,7 +280,7 @@
            let arg = m && m[2] !== undefined ? m[2] : '';
            const isCd = (cmd === 'cd');
            const isCat = (cmd === 'cat');
-           const isGet = (cmd === 'rget' || cmd === 'download');
+           const isGet = (cmd === 'get' || cmd === 'rget' || cmd === 'download');
            if (isCd || isCat || isGet) {
              const body = { path: arg || '', dirsOnly: false, filesOnly: false, maxSize: 0, textOnly: false };
              if (isCd) { body.dirsOnly = true; }
@@ -320,28 +323,32 @@
            evt.preventDefault();
          }
        "
-    >
-      <input
-        id="ghost"
-        class="ghost"
-        type="text"
-        inputmode="text"
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck="false"
-        autofocus
-        aria-label="Hidden terminal input"
-        data-on-input="$current += evt.target.value; evt.target.value='';"
-      />
+      >
+        <input
+          id="ghost"
+          class="ghost"
+          type="text"
+          inputmode="text"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          autofocus
+          aria-label="Hidden terminal input"
+          data-on-input="$current += evt.target.value; evt.target.value='';"
+        />
 
-      <pre
-        id="screen"
-        class="screen"
-        data-ref-screen
-        data-effect="el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${$ps1}</span><span class='input'></span><span class='cursor'>█</span></div>`; el.querySelector('.input').textContent = $current;"
+        <pre
+          id="screen"
+          class="screen"
+          data-ref-screen
+          data-effect="el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${$ps1}</span><span class='input'></span><span class='cursor'>█</span></div>`; el.querySelector('.input').textContent = $current;"
         ></pre>
       </div>
-      <div id="readme" class="readme" data-effect="el.innerHTML = $readme"></div>
+      <div
+        id="readme"
+        class="readme"
+        data-effect="el.innerHTML = $readme"
+      ></div>
     </div>
   </body>
 </html>
