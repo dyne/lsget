@@ -57,7 +57,7 @@ Single binary, no need to install anything!
 
 ```bash
 # Download
-curl -sL https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') -o lsget && chmod +x lsget
+curl -fsSL  "https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname -s)-$(uname -m)" -o lsget && chmod +x lsget
 ```
 
 
@@ -70,7 +70,7 @@ To start using lsget run the following commands
 
 ```bash
 # Download and run
-curl -sL https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') -o lsget && chmod +x lsget
+curl -fsSL  "https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname -s)-$(uname -m)" -o lsget && chmod +x lsget
 ./lsget
 ```
 Open your browser at `http://localhost:8080` and enjoy the neon green shell.

@@ -29,8 +29,19 @@ builds:
     ldflags:
       - -s -w -X github.com/dyne/lsget/main.version={{.Version}}
 archives:
-  - format: binary
-    name_template: "lsget-{{ .Os }}-{{ .Arch }}"
+  - id: binaries
+    builds: [lsget]
+    format: binary
+    name_template: >-
+      lsget-{{- if eq .Os "linux" -}}Linux
+             {{- else if eq .Os "darwin" -}}Darwin
+             {{- else if eq .Os "windows" -}}Windows
+             {{- else -}}{{ .Os }}{{- end -}}-{{- if or
+        (and (eq .Os "linux") (eq .Arch "amd64"))
+        (and (eq .Os "darwin") (eq .Arch "amd64"))
+      -}}x86_64
+      {{- else if and (eq .Os "linux") (eq .Arch "arm64") -}}aarch64
+      {{- else -}}{{ .Arch }}{{- end -}}
 changelog:
   sort: asc
   filters:
