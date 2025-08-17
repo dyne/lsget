@@ -13,20 +13,20 @@
           // Reset
           "\x1b[0m": "</span>",
 
-          // Text colors (only the ones actually used)
-          "\x1b[31m": '<span style="color: #ff0000">', // Red (archives)
-          "\x1b[32m": '<span style="color: #00ff00">', // Green (executables, audio, scripts)
-          "\x1b[33m": '<span style="color: #ffff00">', // Yellow (source code, special files)
-          "\x1b[34m": '<span style="color: #438dff">', // Blue (directories)
-          "\x1b[35m": '<span style="color: #ff00ff">', // Magenta (images)
-          "\x1b[36m": '<span style="color: #00ffff">', // Cyan (symlinks)
-          "\x1b[37m": '<span style="color: #ffffff">', // White (documents)
+          // Text colors using Catppuccin Frappe palette
+          "\x1b[31m": '<span style="color: #e78284">', // Red (archives)
+          "\x1b[32m": '<span style="color: #a6d189">', // Green (executables, audio, scripts)
+          "\x1b[33m": '<span style="color: #e5c890">', // Yellow (source code, special files)
+          "\x1b[34m": '<span style="color: #8caaee">', // Blue (directories)
+          "\x1b[35m": '<span style="color: #f4b8e4">', // Magenta (images)
+          "\x1b[36m": '<span style="color: #81c8be">', // Cyan (symlinks)
+          "\x1b[37m": '<span style="color: #c6d0f5">', // White (documents)
 
-          // Bright text colors (only the ones actually used)
-          "\x1b[90m": '<span style="color: #808080">', // Bright Black (log/temp files)
-          "\x1b[92m": '<span style="color: #80ff80">', // Bright Green (video files)
-          "\x1b[93m": '<span style="color: #ffff80">', // Bright Yellow (web files)
-          "\x1b[96m": '<span style="color: #80ffff">', // Bright Cyan (database files)
+          // Bright text colors using Catppuccin Frappe palette
+          "\x1b[90m": '<span style="color: #737994">', // Bright Black (log/temp files)
+          "\x1b[92m": '<span style="color: #a6d189">', // Bright Green (video files)
+          "\x1b[93m": '<span style="color: #e5c890">', // Bright Yellow (web files)
+          "\x1b[96m": '<span style="color: #99d1db">', // Bright Cyan (database files)
 
           // Text attributes (only the ones actually used)
           "\x1b[1m": '<span style="font-weight: 400">', // Bold (directories)
@@ -119,9 +119,67 @@
 
     <style>
       :root {
-        --olivetti: #39ff14;
-        --olivetti: #9eb208;
-        --term-bg: #000;
+        /* Catppuccin Frappe theme for terminal */
+        --ctp-frappe-rosewater: #f2d5cf;
+        --ctp-frappe-flamingo: #eebebe;
+        --ctp-frappe-pink: #f4b8e4;
+        --ctp-frappe-mauve: #ca9ee6;
+        --ctp-frappe-red: #e78284;
+        --ctp-frappe-maroon: #ea999c;
+        --ctp-frappe-peach: #ef9f76;
+        --ctp-frappe-yellow: #e5c890;
+        --ctp-frappe-green: #a6d189;
+        --ctp-frappe-teal: #81c8be;
+        --ctp-frappe-sky: #99d1db;
+        --ctp-frappe-sapphire: #85c1dc;
+        --ctp-frappe-blue: #8caaee;
+        --ctp-frappe-lavender: #babbf1;
+        --ctp-frappe-text: #c6d0f5;
+        --ctp-frappe-subtext1: #b5bfe2;
+        --ctp-frappe-subtext0: #a5adce;
+        --ctp-frappe-overlay2: #949cbb;
+        --ctp-frappe-overlay1: #838ba7;
+        --ctp-frappe-overlay0: #737994;
+        --ctp-frappe-surface2: #626880;
+        --ctp-frappe-surface1: #51576d;
+        --ctp-frappe-surface0: #414559;
+        --ctp-frappe-base: #303446;
+        --ctp-frappe-mantle: #292c3c;
+        --ctp-frappe-crust: #232634;
+        
+        /* Terminal colors using Frappe */
+        --olivetti: var(--ctp-frappe-green);
+        --term-bg: var(--ctp-frappe-base);
+        --term-text: var(--ctp-frappe-text);
+        --term-border: var(--ctp-frappe-surface2);
+        
+        /* Catppuccin Latte theme for README */
+        --ctp-latte-rosewater: #dc8a78;
+        --ctp-latte-flamingo: #dd7878;
+        --ctp-latte-pink: #ea76cb;
+        --ctp-latte-mauve: #8839ef;
+        --ctp-latte-red: #d20f39;
+        --ctp-latte-maroon: #e64553;
+        --ctp-latte-peach: #fe640b;
+        --ctp-latte-yellow: #df8e1d;
+        --ctp-latte-green: #40a02b;
+        --ctp-latte-teal: #179299;
+        --ctp-latte-sky: #04a5e5;
+        --ctp-latte-sapphire: #209fb5;
+        --ctp-latte-blue: #1e66f5;
+        --ctp-latte-lavender: #7287fd;
+        --ctp-latte-text: #4c4f69;
+        --ctp-latte-subtext1: #5c5f77;
+        --ctp-latte-subtext0: #6c6f85;
+        --ctp-latte-overlay2: #7c7f93;
+        --ctp-latte-overlay1: #8c8fa1;
+        --ctp-latte-overlay0: #9ca0b0;
+        --ctp-latte-surface2: #acb0be;
+        --ctp-latte-surface1: #bcc0cc;
+        --ctp-latte-surface0: #ccd0da;
+        --ctp-latte-base: #eff1f5;
+        --ctp-latte-mantle: #e6e9ef;
+        --ctp-latte-crust: #dce0e8;
       }
       * {
         box-sizing: border-box;
@@ -133,7 +191,7 @@
       body {
         margin: 0;
         background: var(--term-bg);
-        color: var(--olivetti);
+        color: var(--term-text);
         font:
           16px/1.5 ui-monospace,
           SFMono-Regular,
@@ -169,15 +227,124 @@
         flex: 1;
         padding: 1rem;
         overflow: auto;
-        border-left: 1px solid #333;
+        border-left: 1px solid var(--term-border);
+        background: var(--ctp-latte-base);
+        color: var(--ctp-latte-text);
+      }
+      
+      /* Catppuccin Latte styling for README markdown content */
+      .readme h1, .readme h2, .readme h3, .readme h4, .readme h5, .readme h6 {
+        color: var(--ctp-latte-blue);
+        border-bottom: 2px solid var(--ctp-latte-surface1);
+        padding-bottom: 0.3em;
+      }
+      
+      .readme h1 { color: var(--ctp-latte-red); }
+      .readme h2 { color: var(--ctp-latte-peach); }
+      .readme h3 { color: var(--ctp-latte-yellow); }
+      .readme h4 { color: var(--ctp-latte-green); }
+      .readme h5 { color: var(--ctp-latte-teal); }
+      .readme h6 { color: var(--ctp-latte-blue); }
+      
+      .readme p {
+        color: var(--ctp-latte-text);
+        line-height: 1.6;
+      }
+      
+      .readme a {
+        color: var(--ctp-latte-sapphire);
+        text-decoration: none;
+      }
+      
+      .readme a:hover {
+        color: var(--ctp-latte-blue);
+        text-decoration: underline;
+      }
+      
+      .readme code {
+        background: var(--ctp-latte-surface0);
+        color: var(--ctp-latte-red);
+        padding: 0.2em 0.4em;
+        border-radius: 3px;
+        font-size: 0.9em;
+      }
+      
+      .readme pre {
+        background: var(--ctp-latte-mantle);
+        color: var(--ctp-latte-text);
+        padding: 1em;
+        border-radius: 5px;
+        overflow-x: auto;
+        border-left: 4px solid var(--ctp-latte-blue);
+      }
+      
+      .readme pre code {
+        background: transparent;
+        color: inherit;
+        padding: 0;
+      }
+      
+      .readme blockquote {
+        border-left: 4px solid var(--ctp-latte-mauve);
+        margin: 0;
+        padding-left: 1em;
+        color: var(--ctp-latte-subtext0);
+        font-style: italic;
+      }
+      
+      .readme ul, .readme ol {
+        color: var(--ctp-latte-text);
+      }
+      
+      .readme li {
+        margin: 0.2em 0;
+      }
+      
+      .readme strong {
+        color: var(--ctp-latte-red);
+        font-weight: bold;
+      }
+      
+      .readme em {
+        color: var(--ctp-latte-mauve);
+        font-style: italic;
+      }
+      
+      .readme table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 1em 0;
+      }
+      
+      .readme th, .readme td {
+        border: 1px solid var(--ctp-latte-surface1);
+        padding: 0.5em;
+        text-align: left;
+      }
+      
+      .readme th {
+        background: var(--ctp-latte-surface0);
+        color: var(--ctp-latte-blue);
+        font-weight: bold;
+      }
+      
+      .readme hr {
+        border: none;
+        height: 2px;
+        background: var(--ctp-latte-surface1);
+        margin: 2em 0;
       }
       .line {
         display: block;
       }
-      .ps1,
-      .input,
+      .ps1 {
+        color: var(--ctp-frappe-green);
+      }
+      .input {
+        color: var(--ctp-frappe-text);
+      }
       .out {
-        color: var(--olivetti);
+        color: var(--ctp-frappe-text);
       }
       .out {
         opacity: 0.85;
@@ -200,8 +367,8 @@
         }
       }
       ::selection {
-        background: var(--olivetti);
-        color: #000;
+        background: var(--ctp-frappe-mauve);
+        color: var(--ctp-frappe-base);
       }
       .ghost {
         position: fixed;
