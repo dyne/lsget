@@ -27,7 +27,7 @@ builds:
       - arm64
       - ppc64
     ldflags:
-      - -s -w -X github.com/dyne/lsget/main.version={{.Version}}
+      - -s -w -X main.version={{.Version}}
 archives:
   - id: binaries
     builds: [lsget]

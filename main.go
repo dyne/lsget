@@ -918,7 +918,14 @@ func main() {
 	flag.Parse()
 
 	if *printVersion {
-		fmt.Println(version)
+		fmt.Printf("lsget %s\n", version)
+		fmt.Println("Tiny Go-powered web server with a full‑screen, neon‑themed browser terminal.")
+		fmt.Println()
+		fmt.Println("Copyright © 2025 Dyne.org foundation, Amsterdam")
+		fmt.Println("Licensed under GNU Affero General Public License v3.0")
+		fmt.Println()
+		fmt.Println("Repository: https://github.com/dyne/lsget")
+		fmt.Println("Website:    https://dyne.org")
 		os.Exit(0)
 	}
 
