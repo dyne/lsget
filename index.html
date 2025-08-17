@@ -81,8 +81,61 @@
         }
         return p;
       };
+      // Document rendering functions
+      window.renderDocument = function(content, docType) {
+        if (!content) return '';
+        
+        switch(docType) {
+          case 'markdown':
+            return marked.parse(content);
+          case 'rst':
+            // Basic RST to HTML conversion
+            return renderRST(content);
+          case 'nfo':
+            // NFO files should preserve formatting and use monospace
+            return `<pre class="nfo-content">${escapeHTML(content)}</pre>`;
+          case 'text':
+            // Plain text with basic formatting
+            return `<pre class="text-content">${escapeHTML(content)}</pre>`;
+          default:
+            return `<pre class="text-content">${escapeHTML(content)}</pre>`;
+        }
+      };
+      
+      // Basic RST to HTML converter
+      window.renderRST = function(content) {
+        let html = escapeHTML(content);
+        
+        // Headers
+        html = html.replace(/^(.+)\n=+$/gm, '<h1>$1</h1>');
+        html = html.replace(/^(.+)\n-+$/gm, '<h2>$1</h2>');
+        html = html.replace(/^(.+)\n\^+$/gm, '<h3>$1</h3>');
+        html = html.replace(/^(.+)\n"+$/gm, '<h4>$1</h4>');
+        
+        // Bold and italic
+        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        
+        // Code blocks
+        html = html.replace(/::$/gm, '');
+        html = html.replace(/^    (.+)$/gm, '<code>$1</code>');
+        
+        // Links
+        html = html.replace(/`([^`]+) &lt;([^&]+)&gt;`_/g, '<a href="$2">$1</a>');
+        
+        // Line breaks
+        html = html.replace(/\n\n/g, '</p><p>');
+        html = '<p>' + html + '</p>';
+        
+        // Clean up empty paragraphs
+        html = html.replace(/<p>\s*<\/p>/g, '');
+        
+        return html;
+      };
+      
       // Config pulled from server (cat size limit)
       window.CAT_MAX = 262144; // default, will be overwritten by /api/config
+      window.DOC_TYPE = 'markdown'; // default document type
       fetch("/api/config")
         .then((r) => r.json())
         .then((cfg) => {
@@ -90,8 +143,9 @@
             window.CAT_MAX = cfg.catMax;
           if (cfg && typeof cfg.readme === "string") {
             window.INIT_README = cfg.readme;
+            window.DOC_TYPE = cfg.docType || 'markdown';
             window.dispatchEvent(
-              new CustomEvent("initreadme", { detail: cfg.readme }),
+              new CustomEvent("initreadme", { detail: { content: cfg.readme, type: cfg.docType } }),
             );
           }
         })
@@ -232,11 +286,36 @@
         color: var(--ctp-latte-text);
       }
       
-      /* Catppuccin Latte styling for README markdown content */
+      /* Catppuccin Latte styling for documentation content */
       .readme h1, .readme h2, .readme h3, .readme h4, .readme h5, .readme h6 {
         color: var(--ctp-latte-blue);
         border-bottom: 2px solid var(--ctp-latte-surface1);
         padding-bottom: 0.3em;
+      }
+      
+      /* Styling for different document types */
+      .readme .nfo-content {
+        font-family: 'Courier New', 'DejaVu Sans Mono', monospace;
+        font-size: 12px;
+        line-height: 1.2;
+        color: var(--ctp-latte-text);
+        background: var(--ctp-latte-mantle);
+        padding: 1em;
+        border-radius: 5px;
+        overflow-x: auto;
+        white-space: pre;
+        border-left: 4px solid var(--ctp-latte-mauve);
+      }
+      
+      .readme .text-content {
+        color: var(--ctp-latte-text);
+        background: var(--ctp-latte-surface0);
+        padding: 1em;
+        border-radius: 5px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        border-left: 4px solid var(--ctp-latte-green);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', monospace;
       }
       
       .readme h1 { color: var(--ctp-latte-red); }
@@ -334,6 +413,20 @@
         background: var(--ctp-latte-surface1);
         margin: 2em 0;
       }
+      
+      /* Document type indicator */
+      .readme::before {
+        content: attr(data-doc-type);
+        display: block;
+        font-size: 0.8em;
+        color: var(--ctp-latte-subtext0);
+        text-transform: uppercase;
+        margin-bottom: 0.5em;
+        padding: 0.2em 0.5em;
+        background: var(--ctp-latte-surface1);
+        border-radius: 3px;
+        width: fit-content;
+      }
       .line {
         display: block;
       }
@@ -391,9 +484,14 @@
         data-on-load="
             el.querySelector('#ghost').focus();
             const init = window.INIT_README || '';
-            $readme = init ? marked.parse(init) : '';
+            $readme = init ? renderDocument(init, window.DOC_TYPE) : '';
             window.addEventListener('initreadme', (e) => {
-              $readme = e.detail ? marked.parse(e.detail) : '';
+              if (e.detail && typeof e.detail === 'object') {
+                $readme = e.detail.content ? renderDocument(e.detail.content, e.detail.type || 'markdown') : '';
+              } else {
+                // Backward compatibility
+                $readme = e.detail ? renderDocument(e.detail, 'markdown') : '';
+              }
             });
           "
         data-on-click="el.querySelector('#ghost').focus()"
@@ -425,7 +523,7 @@
                   $ps1 = `guest@browser:${cwd}$ `;
                }
                if (res && Object.prototype.hasOwnProperty.call(res, 'readme')) {
-                 $readme = res.readme ? marked.parse(res.readme) : '';
+                 $readme = res.readme ? renderDocument(res.readme, res.docType || 'markdown') : '';
                }
                requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
            })

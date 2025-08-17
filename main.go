@@ -128,25 +128,79 @@ func colorizeName(info os.FileInfo, name string) string {
 	return color + name + colorReset
 }
 
-// readReadme returns the raw contents of README.md if present in dir.
-func readReadme(dir string) string {
+// readDocFile returns the raw contents of documentation files if present in dir.
+// Supports README.md, .txt, .nfo, and .rst files in priority order.
+func readDocFile(dir string) (string, string) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
-		return ""
+		return "", ""
 	}
+	
+	// Priority order for documentation files
+	docFiles := []struct {
+		pattern string
+		fileType string
+	}{
+		{"README.md", "markdown"},
+		{"readme.md", "markdown"},
+		{"README.txt", "text"},
+		{"readme.txt", "text"},
+		{"README.rst", "rst"},
+		{"readme.rst", "rst"},
+		{"README.nfo", "nfo"},
+		{"readme.nfo", "nfo"},
+	}
+	
+	// First, try exact matches in priority order
+	for _, docFile := range docFiles {
+		for _, e := range ents {
+			if !e.Type().IsRegular() {
+				continue
+			}
+			if strings.EqualFold(e.Name(), docFile.pattern) {
+				b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+				if err != nil {
+					continue
+				}
+				return string(b), docFile.fileType
+			}
+		}
+	}
+	
+	// Then try any file with supported extensions
 	for _, e := range ents {
 		if !e.Type().IsRegular() {
 			continue
 		}
-		if strings.EqualFold(e.Name(), "README.md") {
+		name := strings.ToLower(e.Name())
+		if strings.HasSuffix(name, ".md") {
 			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 			if err != nil {
-				return ""
+				continue
 			}
-			return string(b)
+			return string(b), "markdown"
+		} else if strings.HasSuffix(name, ".txt") {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			return string(b), "text"
+		} else if strings.HasSuffix(name, ".rst") {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			return string(b), "rst"
+		} else if strings.HasSuffix(name, ".nfo") {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			return string(b), "nfo"
 		}
 	}
-	return ""
+	
+	return "", ""
 }
 
 // ===== Embed a fallback index.html (used only if the file isn't on disk) =====
@@ -354,6 +408,7 @@ type execResp struct {
 	Download string  `json:"download,omitempty"`
 	CWD      string  `json:"cwd,omitempty"`
 	Readme   *string `json:"readme,omitempty"`
+	DocType  string  `json:"docType,omitempty"`
 }
 
 type completeReq struct {
@@ -374,8 +429,9 @@ type completeResp struct {
 }
 
 type configResp struct {
-	CatMax int64   `json:"catMax"`
-	Readme *string `json:"readme,omitempty"`
+	CatMax  int64   `json:"catMax"`
+	Readme  *string `json:"readme,omitempty"`
+	DocType string  `json:"docType,omitempty"`
 }
 
 // ===== Handlers =====
@@ -425,8 +481,8 @@ func (s *server) processHTMLTemplate(htmlContent []byte) []byte {
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	readme := readReadme(s.rootAbs)
-	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme})
+	readme, docType := readDocFile(s.rootAbs)
+	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme, DocType: docType})
 }
 
 func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -537,8 +593,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.cwd = newV
-		readme := readReadme(newReal)
-		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme})
+		readme, docType := readDocFile(newReal)
+		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme, DocType: docType})
 		return
 
 	case "cat":
