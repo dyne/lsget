@@ -32,7 +32,7 @@ For hackers: hot‑reload your server with [Air](https://github.com/cosmtrek/air
 | Live reload          | `task dev` ⇒ [Air](https://github.com/cosmtrek/air) rebuilds `main.go` on save. |
 | Zero‑config binary   | `go run .` or `go build` produces a single executable. |
 
-<img width="1836" height="833" alt="image" src="https://github.com/user-attachments/assets/5fb0a55f-9579-48f2-9176-bc1a6221b6bb" />
+![Screenshot](./screenshot.png)
 
 # [LIVE DEMO](https://files.dyne.org:31337)
 
