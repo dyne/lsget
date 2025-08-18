@@ -963,7 +963,10 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 	}
 
 	// Reset file position
-	file.Seek(0, 0)
+	_, err = file.Seek(0, 0)
+	if err != nil {
+		return err
+	}
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 1
