@@ -60,8 +60,9 @@ Available commands:
 • cat FILE - view a text file
 • get|rget|download FILE - download a file
 • tree [-L<DEPTH>] [-a] - directory structure
+• find [PATH] [-name PATTERN] [-type f|d] - search for files and directories
 
-Hint: to autocomplete filenames and dir use <Tab>
+Hint: to autocomplete filenames and dir use <kbd>Tab</kbd>
 `
 
 // getFileColor returns the appropriate ANSI color code for a file based on its type and permissions
@@ -135,10 +136,10 @@ func readDocFile(dir string) (string, string) {
 	if err != nil {
 		return "", ""
 	}
-	
+
 	// Priority order for documentation files
 	docFiles := []struct {
-		pattern string
+		pattern  string
 		fileType string
 	}{
 		{"README.md", "markdown"},
@@ -150,7 +151,7 @@ func readDocFile(dir string) (string, string) {
 		{"README.nfo", "nfo"},
 		{"readme.nfo", "nfo"},
 	}
-	
+
 	// First, try exact matches in priority order
 	for _, docFile := range docFiles {
 		for _, e := range ents {
@@ -166,7 +167,7 @@ func readDocFile(dir string) (string, string) {
 			}
 		}
 	}
-	
+
 	// Then try any file with supported extensions
 	for _, e := range ents {
 		if !e.Type().IsRegular() {
@@ -199,7 +200,7 @@ func readDocFile(dir string) (string, string) {
 			return string(b), "nfo"
 		}
 	}
-	
+
 	return "", ""
 }
 
@@ -714,9 +715,131 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		_ = json.NewEncoder(w).Encode(execResp{Output: result.String()})
 		return
+
+	case "find":
+		// Parse options
+		var searchPath string = sess.cwd
+		var namePattern string = "*"
+		var typeFilter string = "" // "f" for files, "d" for directories, "" for both
+
+		// Parse arguments
+		for i := 0; i < len(argv); i++ {
+			arg := argv[i]
+			if arg == "-name" && i+1 < len(argv) {
+				namePattern = argv[i+1]
+				i++ // skip next argument
+			} else if arg == "-type" && i+1 < len(argv) {
+				typeFilter = argv[i+1]
+				i++ // skip next argument
+			} else if !strings.HasPrefix(arg, "-") {
+				// Path argument
+				searchPath = joinVirtual(sess.cwd, arg)
+			}
+		}
+
+		// Validate type filter
+		if typeFilter != "" && typeFilter != "f" && typeFilter != "d" {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "find: invalid type filter (use 'f' for files or 'd' for directories)"})
+			return
+		}
+
+		realSearchPath, err := s.realFromVirtual(searchPath)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "find: permission denied"})
+			return
+		}
+
+		info, err := os.Stat(realSearchPath)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "find: no such file or directory"})
+			return
+		}
+
+		if !info.IsDir() {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "find: not a directory"})
+			return
+		}
+
+		var results []string
+		err = s.findFiles(realSearchPath, searchPath, namePattern, typeFilter, &results)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("find: %v", err)})
+			return
+		}
+
+		if len(results) == 0 {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "find: no matches found"})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
+		return
 	}
 
 	_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("sh: %s: command not found", cmd)})
+}
+
+// findFiles recursively searches for files and directories matching the given pattern
+func (s *server) findFiles(realPath, virtualPath, pattern, typeFilter string, results *[]string) error {
+	entries, err := os.ReadDir(realPath)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+
+		// Skip hidden files unless pattern starts with dot
+		if strings.HasPrefix(name, ".") && !strings.HasPrefix(pattern, ".") {
+			continue
+		}
+
+		realEntryPath := filepath.Join(realPath, name)
+		virtualEntryPath := path.Join(virtualPath, name)
+
+		// Check if name matches pattern
+		matched, err := filepath.Match(pattern, name)
+		if err != nil {
+			continue // Invalid pattern, skip this entry
+		}
+
+		isDir := entry.IsDir()
+
+		// Apply type filter and add to results if matched
+		if matched {
+			includeEntry := false
+			switch typeFilter {
+			case "f":
+				includeEntry = !isDir
+			case "d":
+				includeEntry = isDir
+			default:
+				includeEntry = true
+			}
+
+			if includeEntry {
+				// Get file info for colorization
+				info, err := entry.Info()
+				if err == nil {
+					colorizedName := colorizeName(info, virtualEntryPath)
+					*results = append(*results, colorizedName)
+				} else {
+					*results = append(*results, virtualEntryPath)
+				}
+			}
+		}
+
+		// Recursively search subdirectories
+		if isDir {
+			err := s.findFiles(realEntryPath, virtualEntryPath, pattern, typeFilter, results)
+			if err != nil {
+				// Continue searching other directories even if one fails
+				continue
+			}
+		}
+	}
+
+	return nil
 }
 
 // buildTree recursively builds a tree representation of the directory structure
