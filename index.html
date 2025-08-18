@@ -82,60 +82,63 @@
         return p;
       };
       // Document rendering functions
-      window.renderDocument = function(content, docType) {
-        if (!content) return '';
-        
-        switch(docType) {
-          case 'markdown':
+      window.renderDocument = function (content, docType) {
+        if (!content) return "";
+
+        switch (docType) {
+          case "markdown":
             return marked.parse(content);
-          case 'rst':
+          case "rst":
             // Basic RST to HTML conversion
             return renderRST(content);
-          case 'nfo':
+          case "nfo":
             // NFO files should preserve formatting and use monospace
             return `<pre class="nfo-content">${escapeHTML(content)}</pre>`;
-          case 'text':
+          case "text":
             // Plain text with basic formatting
             return `<pre class="text-content">${escapeHTML(content)}</pre>`;
           default:
             return `<pre class="text-content">${escapeHTML(content)}</pre>`;
         }
       };
-      
+
       // Basic RST to HTML converter
-      window.renderRST = function(content) {
+      window.renderRST = function (content) {
         let html = escapeHTML(content);
-        
+
         // Headers
-        html = html.replace(/^(.+)\n=+$/gm, '<h1>$1</h1>');
-        html = html.replace(/^(.+)\n-+$/gm, '<h2>$1</h2>');
-        html = html.replace(/^(.+)\n\^+$/gm, '<h3>$1</h3>');
-        html = html.replace(/^(.+)\n"+$/gm, '<h4>$1</h4>');
-        
+        html = html.replace(/^(.+)\n=+$/gm, "<h1>$1</h1>");
+        html = html.replace(/^(.+)\n-+$/gm, "<h2>$1</h2>");
+        html = html.replace(/^(.+)\n\^+$/gm, "<h3>$1</h3>");
+        html = html.replace(/^(.+)\n"+$/gm, "<h4>$1</h4>");
+
         // Bold and italic
-        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-        
+        html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+
         // Code blocks
-        html = html.replace(/::$/gm, '');
-        html = html.replace(/^    (.+)$/gm, '<code>$1</code>');
-        
+        html = html.replace(/::$/gm, "");
+        html = html.replace(/^    (.+)$/gm, "<code>$1</code>");
+
         // Links
-        html = html.replace(/`([^`]+) &lt;([^&]+)&gt;`_/g, '<a href="$2">$1</a>');
-        
+        html = html.replace(
+          /`([^`]+) &lt;([^&]+)&gt;`_/g,
+          '<a href="$2">$1</a>',
+        );
+
         // Line breaks
-        html = html.replace(/\n\n/g, '</p><p>');
-        html = '<p>' + html + '</p>';
-        
+        html = html.replace(/\n\n/g, "</p><p>");
+        html = "<p>" + html + "</p>";
+
         // Clean up empty paragraphs
-        html = html.replace(/<p>\s*<\/p>/g, '');
-        
+        html = html.replace(/<p>\s*<\/p>/g, "");
+
         return html;
       };
-      
+
       // Config pulled from server (cat size limit)
       window.CAT_MAX = 262144; // default, will be overwritten by /api/config
-      window.DOC_TYPE = 'markdown'; // default document type
+      window.DOC_TYPE = "markdown"; // default document type
       fetch("/api/config")
         .then((r) => r.json())
         .then((cfg) => {
@@ -143,9 +146,11 @@
             window.CAT_MAX = cfg.catMax;
           if (cfg && typeof cfg.readme === "string") {
             window.INIT_README = cfg.readme;
-            window.DOC_TYPE = cfg.docType || 'markdown';
+            window.DOC_TYPE = cfg.docType || "markdown";
             window.dispatchEvent(
-              new CustomEvent("initreadme", { detail: { content: cfg.readme, type: cfg.docType } }),
+              new CustomEvent("initreadme", {
+                detail: { content: cfg.readme, type: cfg.docType },
+              }),
             );
           }
         })
@@ -200,13 +205,13 @@
         --ctp-frappe-base: #303446;
         --ctp-frappe-mantle: #292c3c;
         --ctp-frappe-crust: #232634;
-        
+
         /* Terminal colors using Frappe */
         --olivetti: var(--ctp-frappe-green);
         --term-bg: var(--ctp-frappe-base);
         --term-text: var(--ctp-frappe-text);
         --term-border: var(--ctp-frappe-surface2);
-        
+
         /* Catppuccin Latte theme for README */
         --ctp-latte-rosewater: #dc8a78;
         --ctp-latte-flamingo: #dd7878;
@@ -285,17 +290,22 @@
         background: var(--ctp-latte-base);
         color: var(--ctp-latte-text);
       }
-      
+
       /* Catppuccin Latte styling for documentation content */
-      .readme h1, .readme h2, .readme h3, .readme h4, .readme h5, .readme h6 {
+      .readme h1,
+      .readme h2,
+      .readme h3,
+      .readme h4,
+      .readme h5,
+      .readme h6 {
         color: var(--ctp-latte-blue);
         border-bottom: 2px solid var(--ctp-latte-surface1);
         padding-bottom: 0.3em;
       }
-      
+
       /* Styling for different document types */
       .readme .nfo-content {
-        font-family: 'Courier New', 'DejaVu Sans Mono', monospace;
+        font-family: "Courier New", "DejaVu Sans Mono", monospace;
         font-size: 12px;
         line-height: 1.2;
         color: var(--ctp-latte-text);
@@ -306,7 +316,7 @@
         white-space: pre;
         border-left: 4px solid var(--ctp-latte-mauve);
       }
-      
+
       .readme .text-content {
         color: var(--ctp-latte-text);
         background: var(--ctp-latte-surface0);
@@ -315,31 +325,45 @@
         overflow-x: auto;
         white-space: pre-wrap;
         border-left: 4px solid var(--ctp-latte-green);
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "DejaVu Sans Mono", monospace;
       }
-      
-      .readme h1 { color: var(--ctp-latte-red); }
-      .readme h2 { color: var(--ctp-latte-peach); }
-      .readme h3 { color: var(--ctp-latte-yellow); }
-      .readme h4 { color: var(--ctp-latte-green); }
-      .readme h5 { color: var(--ctp-latte-teal); }
-      .readme h6 { color: var(--ctp-latte-blue); }
-      
+
+      .readme h1 {
+        color: var(--ctp-latte-red);
+      }
+      .readme h2 {
+        color: var(--ctp-latte-peach);
+      }
+      .readme h3 {
+        color: var(--ctp-latte-yellow);
+      }
+      .readme h4 {
+        color: var(--ctp-latte-green);
+      }
+      .readme h5 {
+        color: var(--ctp-latte-teal);
+      }
+      .readme h6 {
+        color: var(--ctp-latte-blue);
+      }
+
       .readme p {
         color: var(--ctp-latte-text);
         line-height: 1.6;
       }
-      
+
       .readme a {
         color: var(--ctp-latte-sapphire);
         text-decoration: none;
       }
-      
+
       .readme a:hover {
         color: var(--ctp-latte-blue);
         text-decoration: underline;
       }
-      
+
       .readme code {
         background: var(--ctp-latte-surface0);
         color: var(--ctp-latte-red);
@@ -347,7 +371,7 @@
         border-radius: 3px;
         font-size: 0.9em;
       }
-      
+
       .readme pre {
         background: var(--ctp-latte-mantle);
         color: var(--ctp-latte-text);
@@ -356,13 +380,13 @@
         overflow-x: auto;
         border-left: 4px solid var(--ctp-latte-blue);
       }
-      
+
       .readme pre code {
         background: transparent;
         color: inherit;
         padding: 0;
       }
-      
+
       .readme blockquote {
         border-left: 4px solid var(--ctp-latte-mauve);
         margin: 0;
@@ -370,50 +394,52 @@
         color: var(--ctp-latte-subtext0);
         font-style: italic;
       }
-      
-      .readme ul, .readme ol {
+
+      .readme ul,
+      .readme ol {
         color: var(--ctp-latte-text);
       }
-      
+
       .readme li {
         margin: 0.2em 0;
       }
-      
+
       .readme strong {
         color: var(--ctp-latte-red);
         font-weight: bold;
       }
-      
+
       .readme em {
         color: var(--ctp-latte-mauve);
         font-style: italic;
       }
-      
+
       .readme table {
         border-collapse: collapse;
         width: 100%;
         margin: 1em 0;
       }
-      
-      .readme th, .readme td {
+
+      .readme th,
+      .readme td {
         border: 1px solid var(--ctp-latte-surface1);
         padding: 0.5em;
         text-align: left;
       }
-      
+
       .readme th {
         background: var(--ctp-latte-surface0);
         color: var(--ctp-latte-blue);
         font-weight: bold;
       }
-      
+
       .readme hr {
         border: none;
         height: 2px;
         background: var(--ctp-latte-surface1);
         margin: 2em 0;
       }
-      
+
       /* Document type indicator */
       .readme::before {
         content: attr(data-doc-type);
@@ -478,7 +504,10 @@
     </style>
   </head>
   <body>
-    <div class="layout" data-signals='{ ps1: "guest@browser:~$ ", cwd: "~", current: "", buffer: "{{HELP_MESSAGE}}", history: [], histIndex: 0, readme: "" }'>
+    <div
+      class="layout"
+      data-signals='{ ps1: "guest@browser:~$ ", cwd: "~", current: "", buffer: "{{HELP_MESSAGE}}", history: [], histIndex: 0, readme: "" }'
+    >
       <div
         class="terminal"
         data-on-load="
@@ -514,7 +543,6 @@
              .then((res) => {
                const { output, download, cwd } = res || {};
              if (typeof output === 'string' && output.length) {
-              console.log(ansiToHtml(output));
                $buffer += `<div class='line out'>${ansiToHtml(output)}</div>`;
              }
              if (download) { startDownload(download); }
