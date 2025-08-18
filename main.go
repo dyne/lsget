@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"mime"
 	"net/http"
@@ -49,23 +50,31 @@ const (
 	colorBold = "\033[1m"
 )
 
-// Help message displayed on startup and via help command
-const helpMessage = `Welcome to lsget!
-Type one of the commands below to get started.
+const helpTpl = `Welcome to <span class="ps1">lsget</span> <span style="color: #666;">v{{.Version}}</span>!
+<span style="color: #888;">Type one of the commands below to get started.</span>
+<br/>
 
-Available commands:
-• help - print this message again
-• pwd - print working directory
-• ls [-l]|dir [-l] - list files
-• cd DIR - change directory
-• cat FILE - view a text file
-• get|rget|download FILE - download a file
-• tree [-L<DEPTH>] [-a] - directory structure
-• find [PATH] [-name PATTERN] [-type f|d] - search for files and directories
-• grep [-r] [-i] [-n] PATTERN [FILE...] - search for text patterns in files
+<span style="color: #aaa;">Available commands:</span>
+• <strong>help</strong> - <span style="color: #bbb;">print this message again</span>
+• <strong>pwd</strong> - <span style="color: #bbb;">print working directory</span>
+• <strong>ls</strong> <span style="color: #888;">[-l]</span>|<strong>dir</strong> <span style="color: #888;">[-l]</span> - <span style="color: #bbb;">list files</span>
+• <strong>cd</strong> <span style="color: #888;">DIR</span> - <span style="color: #bbb;">change directory</span>
+• <strong>cat</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">view a text file</span>
+• <strong>get</strong>|<strong>rget</strong>|<strong>download</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">download a file</span>
+• <strong>tree</strong> <span style="color: #888;">[-L&lt;DEPTH&gt;] [-a]</span> - <span style="color: #bbb;">directory structure</span>
+• <strong>find</strong> <span style="color: #888;">[PATH] [-name PATTERN] [-type f|d]</span> - <span style="color: #bbb;">search for files and directories</span>
+• <strong>grep</strong> <span style="color: #888;">[-r] [-i] [-n] PATTERN [FILE...]</span> - <span style="color: #bbb;">search for text patterns in files</span>
 
-Hint: to autocomplete filenames and dir use <kbd>Tab</kbd>
+<br/><br/>
+<span style="color: #aaa;">Hint: to autocomplete filenames and dir use</span> <kbd class="ps1">Tab</kbd>
 `
+
+func renderHelp() string {
+	var helpMessage = template.Must(template.New("help").Parse(helpTpl))
+	var b bytes.Buffer
+	_ = helpMessage.Execute(&b, struct{ Version string }{Version: version})
+	return b.String()
+}
 
 // getFileColor returns the appropriate ANSI color code for a file based on its type and permissions
 func getFileColor(info os.FileInfo, name string) string {
@@ -231,6 +240,88 @@ func newServer(rootAbs string, catMax int64) *server {
 		catMax:   catMax,
 		sessions: make(map[string]*session),
 	}
+}
+
+// ===== .lsgetignore support =====
+
+// parseIgnoreFile reads and parses a .lsgetignore file, returning a slice of patterns
+func parseIgnoreFile(ignoreFilePath string) ([]string, error) {
+	file, err := os.Open(ignoreFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // No ignore file is fine
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	var patterns []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		patterns = append(patterns, line)
+	}
+
+	return patterns, scanner.Err()
+}
+
+// shouldIgnore checks if a file/directory should be ignored based on .lsgetignore patterns
+// It looks for .lsgetignore files in the current directory and all parent directories up to rootAbs
+func (s *server) shouldIgnore(realPath, name string) bool {
+	// Start from the directory containing the file/directory
+	currentDir := filepath.Dir(realPath)
+
+	// Walk up the directory tree until we reach rootAbs
+	for {
+		// Check if we've gone above the root directory
+		rel, err := filepath.Rel(s.rootAbs, currentDir)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			break
+		}
+
+		// Look for .lsgetignore in current directory
+		ignoreFile := filepath.Join(currentDir, ".lsgetignore")
+		patterns, err := parseIgnoreFile(ignoreFile)
+		if err == nil && len(patterns) > 0 {
+			// Check if the file matches any pattern
+			for _, pattern := range patterns {
+				// Support both simple filename matching and path-based matching
+				matched, err := filepath.Match(pattern, name)
+				if err == nil && matched {
+					return true
+				}
+
+				// Also check if the pattern matches the relative path from current directory
+				relPath, err := filepath.Rel(currentDir, realPath)
+				if err == nil {
+					matched, err := filepath.Match(pattern, relPath)
+					if err == nil && matched {
+						return true
+					}
+					// Also check directory-based patterns
+					if strings.Contains(relPath, "/") {
+						matched, err := filepath.Match(pattern, filepath.Base(relPath))
+						if err == nil && matched {
+							return true
+						}
+					}
+				}
+			}
+		}
+
+		// Move up one directory
+		parentDir := filepath.Dir(currentDir)
+		if parentDir == currentDir {
+			break // Reached root
+		}
+		currentDir = parentDir
+	}
+
+	return false
 }
 
 // ===== Utilities =====
@@ -461,7 +552,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // processHTMLTemplate replaces placeholders in HTML with dynamic content
 func (s *server) processHTMLTemplate(htmlContent []byte) []byte {
 	// Split into lines and wrap each in HTML div tags
-	lines := strings.Split(strings.TrimSpace(helpMessage), "\n")
+	lines := strings.Split(strings.TrimSpace(renderHelp()), "\n")
 	var htmlLines []string
 	for _, line := range lines {
 		if line == "" {
@@ -511,7 +602,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "help":
-		_ = json.NewEncoder(w).Encode(execResp{Output: helpMessage})
+		_ = json.NewEncoder(w).Encode(execResp{Output: renderHelp()})
 		return
 
 	case "ls", "dir":
@@ -541,6 +632,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			name := e.Name()
 			if !showHidden && strings.HasPrefix(name, ".") {
 				continue // hide dotfiles unless -a flag is used
+			}
+			// Check if file should be ignored based on .lsgetignore
+			realFilePath := filepath.Join(realCwd, name)
+			if s.shouldIgnore(realFilePath, name) {
+				continue
 			}
 			names = append(names, name)
 		}
@@ -782,14 +878,14 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "grep: missing pattern"})
 			return
 		}
-		
+
 		// Parse options
 		var recursive bool
 		var ignoreCase bool
 		var showLineNumbers bool
 		var pattern string
 		var files []string
-		
+
 		// Parse arguments
 		i := 0
 		for i < len(argv) {
@@ -813,12 +909,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			i++
 		}
-		
+
 		if pattern == "" {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "grep: missing pattern"})
 			return
 		}
-		
+
 		// If no files specified and recursive, search current directory
 		if len(files) == 0 {
 			if recursive {
@@ -828,7 +924,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		
+
 		var results []string
 		for _, file := range files {
 			vp := joinVirtual(sess.cwd, file)
@@ -837,13 +933,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				results = append(results, fmt.Sprintf("grep: %s: permission denied", file))
 				continue
 			}
-			
+
 			info, err := os.Stat(rp)
 			if err != nil {
 				results = append(results, fmt.Sprintf("grep: %s: no such file or directory", file))
 				continue
 			}
-			
+
 			if info.IsDir() {
 				if recursive {
 					err := s.grepInDirectory(rp, vp, pattern, ignoreCase, showLineNumbers, &results)
@@ -860,12 +956,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		
+
 		if len(results) == 0 {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "grep: no matches found"})
 			return
 		}
-		
+
 		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
 		return
 	}
@@ -890,6 +986,11 @@ func (s *server) findFiles(realPath, virtualPath, pattern, typeFilter string, re
 
 		realEntryPath := filepath.Join(realPath, name)
 		virtualEntryPath := path.Join(virtualPath, name)
+
+		// Check if file should be ignored based on .lsgetignore
+		if s.shouldIgnore(realEntryPath, name) {
+			continue
+		}
 
 		// Check if name matches pattern
 		matched, err := filepath.Match(pattern, name)
@@ -984,7 +1085,7 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 
 		if strings.Contains(searchLine, searchPattern) {
 			var result strings.Builder
-			
+
 			// Add filename if multiple files or recursive search
 			if showFilename {
 				result.WriteString(colorCyan)
@@ -992,7 +1093,7 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 				result.WriteString(colorReset)
 				result.WriteString(":")
 			}
-			
+
 			// Add line number if requested
 			if showLineNumbers {
 				result.WriteString(colorGreen)
@@ -1000,7 +1101,7 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 				result.WriteString(colorReset)
 				result.WriteString(":")
 			}
-			
+
 			// Highlight the matching pattern in the line
 			if ignoreCase {
 				// Case insensitive highlighting
@@ -1008,8 +1109,8 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 				start := strings.Index(lowerLine, searchPattern)
 				if start >= 0 {
 					end := start + len(searchPattern)
-					highlighted := line[:start] + 
-						colorYellow + colorBold + line[start:end] + colorReset + 
+					highlighted := line[:start] +
+						colorYellow + colorBold + line[start:end] + colorReset +
 						line[end:]
 					result.WriteString(highlighted)
 				} else {
@@ -1017,11 +1118,11 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 				}
 			} else {
 				// Case sensitive highlighting
-				highlighted := strings.ReplaceAll(line, pattern, 
-					colorYellow + colorBold + pattern + colorReset)
+				highlighted := strings.ReplaceAll(line, pattern,
+					colorYellow+colorBold+pattern+colorReset)
 				result.WriteString(highlighted)
 			}
-			
+
 			*results = append(*results, result.String())
 		}
 		lineNum++
@@ -1039,7 +1140,7 @@ func (s *server) grepInDirectory(realPath, virtualPath, pattern string, ignoreCa
 
 	for _, entry := range entries {
 		name := entry.Name()
-		
+
 		// Skip hidden files and directories
 		if strings.HasPrefix(name, ".") {
 			continue
@@ -1047,6 +1148,11 @@ func (s *server) grepInDirectory(realPath, virtualPath, pattern string, ignoreCa
 
 		realEntryPath := filepath.Join(realPath, name)
 		virtualEntryPath := path.Join(virtualPath, name)
+
+		// Check if file should be ignored based on .lsgetignore
+		if s.shouldIgnore(realEntryPath, name) {
+			continue
+		}
 
 		if entry.IsDir() {
 			// Recursively search subdirectories
