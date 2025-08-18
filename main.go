@@ -531,6 +531,17 @@ type configResp struct {
 // ===== Handlers =====
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// If requesting root path, serve the main index.html
+	if r.URL.Path == "/" {
+		s.serveMainIndex(w, r)
+		return
+	}
+
+	// Otherwise, try to serve as static file
+	s.handleStaticFile(w, r)
+}
+
+func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
 	var htmlContent []byte
 
 	// Serve from disk if available so you can iterate quickly.
@@ -547,6 +558,48 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(processedHTML)
+}
+
+func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
+	// Clean the requested path
+	requestPath := path.Clean(r.URL.Path)
+	
+	// Convert virtual path to real filesystem path
+	realPath, err := s.realFromVirtual(requestPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Check if file exists and get info
+	info, err := os.Stat(realPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Don't serve directories as static files
+	if info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Check if file should be ignored based on .lsgetignore patterns
+	fileName := filepath.Base(realPath)
+	if s.shouldIgnore(realPath, fileName) {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Set appropriate content type based on file extension
+	contentType := mime.TypeByExtension(filepath.Ext(realPath))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+
+	// Serve the file
+	http.ServeFile(w, r, realPath)
 }
 
 // processHTMLTemplate replaces placeholders in HTML with dynamic content
