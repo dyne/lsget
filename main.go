@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	_ "embed"
@@ -61,6 +62,7 @@ Available commands:
 • get|rget|download FILE - download a file
 • tree [-L<DEPTH>] [-a] - directory structure
 • find [PATH] [-name PATTERN] [-type f|d] - search for files and directories
+• grep [-r] [-i] [-n] PATTERN [FILE...] - search for text patterns in files
 
 Hint: to autocomplete filenames and dir use <kbd>Tab</kbd>
 `
@@ -774,6 +776,98 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
 		return
+
+	case "grep":
+		if len(argv) < 1 {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "grep: missing pattern"})
+			return
+		}
+		
+		// Parse options
+		var recursive bool
+		var ignoreCase bool
+		var showLineNumbers bool
+		var pattern string
+		var files []string
+		
+		// Parse arguments
+		i := 0
+		for i < len(argv) {
+			arg := argv[i]
+			if strings.HasPrefix(arg, "-") {
+				if strings.Contains(arg, "r") {
+					recursive = true
+				}
+				if strings.Contains(arg, "i") {
+					ignoreCase = true
+				}
+				if strings.Contains(arg, "n") {
+					showLineNumbers = true
+				}
+			} else {
+				if pattern == "" {
+					pattern = arg
+				} else {
+					files = append(files, arg)
+				}
+			}
+			i++
+		}
+		
+		if pattern == "" {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "grep: missing pattern"})
+			return
+		}
+		
+		// If no files specified and recursive, search current directory
+		if len(files) == 0 {
+			if recursive {
+				files = []string{"."}
+			} else {
+				_ = json.NewEncoder(w).Encode(execResp{Output: "grep: no files specified"})
+				return
+			}
+		}
+		
+		var results []string
+		for _, file := range files {
+			vp := joinVirtual(sess.cwd, file)
+			rp, err := s.realFromVirtual(vp)
+			if err != nil {
+				results = append(results, fmt.Sprintf("grep: %s: permission denied", file))
+				continue
+			}
+			
+			info, err := os.Stat(rp)
+			if err != nil {
+				results = append(results, fmt.Sprintf("grep: %s: no such file or directory", file))
+				continue
+			}
+			
+			if info.IsDir() {
+				if recursive {
+					err := s.grepInDirectory(rp, vp, pattern, ignoreCase, showLineNumbers, &results)
+					if err != nil {
+						results = append(results, fmt.Sprintf("grep: %s: %v", file, err))
+					}
+				} else {
+					results = append(results, fmt.Sprintf("grep: %s: is a directory", file))
+				}
+			} else {
+				err := s.grepInFile(rp, vp, pattern, ignoreCase, showLineNumbers, len(files) > 1, &results)
+				if err != nil {
+					results = append(results, fmt.Sprintf("grep: %s: %v", file, err))
+				}
+			}
+		}
+		
+		if len(results) == 0 {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "grep: no matches found"})
+			return
+		}
+		
+		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
+		return
 	}
 
 	_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("sh: %s: command not found", cmd)})
@@ -834,6 +928,135 @@ func (s *server) findFiles(realPath, virtualPath, pattern, typeFilter string, re
 			err := s.findFiles(realEntryPath, virtualEntryPath, pattern, typeFilter, results)
 			if err != nil {
 				// Continue searching other directories even if one fails
+				continue
+			}
+		}
+	}
+
+	return nil
+}
+
+// grepInFile searches for a pattern within a single file
+func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, showLineNumbers, showFilename bool, results *[]string) error {
+	file, err := os.Open(realPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Check if file is likely to be text
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Skip very large files to avoid memory issues
+	if info.Size() > 10*1024*1024 { // 10MB limit
+		return fmt.Errorf("file too large")
+	}
+
+	// Read a sample to check if it's text
+	sample := make([]byte, 4096)
+	n, _ := file.Read(sample)
+	if !looksText(sample[:n]) {
+		return nil // Skip binary files silently
+	}
+
+	// Reset file position
+	file.Seek(0, 0)
+
+	scanner := bufio.NewScanner(file)
+	lineNum := 1
+	searchPattern := pattern
+	if ignoreCase {
+		searchPattern = strings.ToLower(pattern)
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		searchLine := line
+		if ignoreCase {
+			searchLine = strings.ToLower(line)
+		}
+
+		if strings.Contains(searchLine, searchPattern) {
+			var result strings.Builder
+			
+			// Add filename if multiple files or recursive search
+			if showFilename {
+				result.WriteString(colorCyan)
+				result.WriteString(virtualPath)
+				result.WriteString(colorReset)
+				result.WriteString(":")
+			}
+			
+			// Add line number if requested
+			if showLineNumbers {
+				result.WriteString(colorGreen)
+				result.WriteString(fmt.Sprintf("%d", lineNum))
+				result.WriteString(colorReset)
+				result.WriteString(":")
+			}
+			
+			// Highlight the matching pattern in the line
+			if ignoreCase {
+				// Case insensitive highlighting
+				lowerLine := strings.ToLower(line)
+				start := strings.Index(lowerLine, searchPattern)
+				if start >= 0 {
+					end := start + len(searchPattern)
+					highlighted := line[:start] + 
+						colorYellow + colorBold + line[start:end] + colorReset + 
+						line[end:]
+					result.WriteString(highlighted)
+				} else {
+					result.WriteString(line)
+				}
+			} else {
+				// Case sensitive highlighting
+				highlighted := strings.ReplaceAll(line, pattern, 
+					colorYellow + colorBold + pattern + colorReset)
+				result.WriteString(highlighted)
+			}
+			
+			*results = append(*results, result.String())
+		}
+		lineNum++
+	}
+
+	return scanner.Err()
+}
+
+// grepInDirectory recursively searches for a pattern in all text files within a directory
+func (s *server) grepInDirectory(realPath, virtualPath, pattern string, ignoreCase, showLineNumbers bool, results *[]string) error {
+	entries, err := os.ReadDir(realPath)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		
+		// Skip hidden files and directories
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+
+		realEntryPath := filepath.Join(realPath, name)
+		virtualEntryPath := path.Join(virtualPath, name)
+
+		if entry.IsDir() {
+			// Recursively search subdirectories
+			err := s.grepInDirectory(realEntryPath, virtualEntryPath, pattern, ignoreCase, showLineNumbers, results)
+			if err != nil {
+				// Continue searching other directories even if one fails
+				continue
+			}
+		} else {
+			// Search in file
+			err := s.grepInFile(realEntryPath, virtualEntryPath, pattern, ignoreCase, showLineNumbers, true, results)
+			if err != nil {
+				// Continue searching other files even if one fails
 				continue
 			}
 		}
