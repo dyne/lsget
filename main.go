@@ -338,6 +338,8 @@ func (s *server) getSession(w http.ResponseWriter, r *http.Request) *session {
 		s.mu.RLock()
 		if sess, ok := s.sessions[ck.Value]; ok {
 			s.mu.RUnlock()
+			// Always reset to root directory on every visit
+			sess.cwd = "/"
 			return sess
 		}
 		s.mu.RUnlock()
