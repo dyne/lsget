@@ -338,8 +338,6 @@ func (s *server) getSession(w http.ResponseWriter, r *http.Request) *session {
 		s.mu.RLock()
 		if sess, ok := s.sessions[ck.Value]; ok {
 			s.mu.RUnlock()
-			// Always reset to root directory on every visit
-			sess.cwd = "/"
 			return sess
 		}
 		s.mu.RUnlock()
@@ -565,7 +563,7 @@ func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 	// Clean the requested path
 	requestPath := path.Clean(r.URL.Path)
-	
+
 	// Convert virtual path to real filesystem path
 	realPath, err := s.realFromVirtual(requestPath)
 	if err != nil {

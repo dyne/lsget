@@ -155,6 +155,25 @@
           }
         })
         .catch(() => {});
+
+      // Sync current working directory on page load
+      window.addEventListener("DOMContentLoaded", () => {
+        fetch("/api/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input: "pwd" })
+        })
+        .then(r => r.json())
+        .then(res => {
+          if (res && res.cwd) {
+            // Update the datastar signals
+            window.dispatchEvent(new CustomEvent("syncCwd", {
+              detail: { cwd: res.cwd }
+            }));
+          }
+        })
+        .catch(() => {});
+      });
       // Start a download by programmatically clicking an <a>
       window.startDownload = function (href) {
         try {
@@ -506,7 +525,7 @@
   <body>
     <div
       class="layout"
-      data-signals='{ ps1: "guest@browser:~$ ", cwd: "~", current: "", buffer: "{{HELP_MESSAGE}}", history: [], histIndex: 0, readme: "" }'
+      data-signals='{ ps1: "guest@browser:/$ ", cwd: "/", current: "", buffer: "{{HELP_MESSAGE}}", history: [], histIndex: 0, readme: "" }'
     >
       <div
         class="terminal"
@@ -520,6 +539,12 @@
               } else {
                 // Backward compatibility
                 $readme = e.detail ? renderDocument(e.detail, 'markdown') : '';
+              }
+            });
+            window.addEventListener('syncCwd', (e) => {
+              if (e.detail && e.detail.cwd) {
+                $cwd = e.detail.cwd;
+                $ps1 = `guest@browser:${e.detail.cwd}$ `;
               }
             });
           "
