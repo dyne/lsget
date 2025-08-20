@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"crypto/rand"
@@ -798,7 +799,35 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: missing operand"})
 			return
 		}
-		vp := joinVirtual(sess.cwd, argv[0])
+		
+		pattern := argv[0]
+		
+		// Check if pattern contains wildcards or is a directory
+		if strings.ContainsAny(pattern, "*?[") || pattern == "." {
+			// Handle pattern-based download (multiple files)
+			files, err := s.collectFilesForDownload(sess.cwd, pattern)
+			if err != nil {
+				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("download: %v", err)})
+				return
+			}
+			if len(files) == 0 {
+				_ = json.NewEncoder(w).Encode(execResp{Output: "download: no matching files found"})
+				return
+			}
+			if len(files) == 1 {
+				// Single file, download directly
+				url := "/api/download?path=" + urlEscapeVirtual(files[0].virtualPath)
+				_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
+				return
+			}
+			// Multiple files, create zip
+			url := "/api/download?pattern=" + urlQueryEscape(pattern) + "&cwd=" + urlEscapeVirtual(sess.cwd)
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: url})
+			return
+		}
+		
+		// Check if it's a directory
+		vp := joinVirtual(sess.cwd, pattern)
 		rp, err := s.realFromVirtual(vp)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: permission denied"})
@@ -809,10 +838,25 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: no such file"})
 			return
 		}
+		
 		if info.IsDir() {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "download: is a directory"})
+			// Download directory as zip
+			files, err := s.collectFilesFromDirectory(vp, rp)
+			if err != nil {
+				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("download: %v", err)})
+				return
+			}
+			if len(files) == 0 {
+				_ = json.NewEncoder(w).Encode(execResp{Output: "download: directory is empty"})
+				return
+			}
+			dirName := filepath.Base(rp)
+			url := "/api/download?dir=" + urlEscapeVirtual(vp)
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading directory '%s' with %d files as %s.zip", dirName, len(files), dirName), Download: url})
 			return
 		}
+		
+		// Single file download
 		url := "/api/download?path=" + urlEscapeVirtual(vp)
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
 		return
@@ -1227,6 +1271,227 @@ func (s *server) grepInDirectory(realPath, virtualPath, pattern string, ignoreCa
 	return nil
 }
 
+// fileInfo holds information about a file for zip archive creation
+type fileInfo struct {
+	virtualPath string
+	realPath    string
+	relativePath string
+}
+
+// collectFilesForDownload collects files matching a pattern for download
+func (s *server) collectFilesForDownload(cwd, pattern string) ([]fileInfo, error) {
+	var files []fileInfo
+	
+	// Handle special case for current directory
+	if pattern == "." {
+		realCwd, err := s.realFromVirtual(cwd)
+		if err != nil {
+			return nil, err
+		}
+		return s.collectFilesFromDirectory(cwd, realCwd)
+	}
+	
+	// Handle wildcard patterns
+	if strings.ContainsAny(pattern, "*?[") {
+		realCwd, err := s.realFromVirtual(cwd)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Check if pattern contains directory separator
+		if strings.Contains(pattern, "/") {
+			// Pattern includes path, need to handle directory traversal
+			dir := filepath.Dir(pattern)
+			filePattern := filepath.Base(pattern)
+			
+			vDir := joinVirtual(cwd, dir)
+			rDir, err := s.realFromVirtual(vDir)
+			if err != nil {
+				return nil, err
+			}
+			
+			entries, err := os.ReadDir(rDir)
+			if err != nil {
+				return nil, err
+			}
+			
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				
+				matched, err := filepath.Match(filePattern, entry.Name())
+				if err != nil || !matched {
+					continue
+				}
+				
+				realPath := filepath.Join(rDir, entry.Name())
+				if s.shouldIgnore(realPath, entry.Name()) {
+					continue
+				}
+				
+				files = append(files, fileInfo{
+					virtualPath:  path.Join(vDir, entry.Name()),
+					realPath:     realPath,
+					relativePath: entry.Name(),
+				})
+			}
+		} else {
+			// Pattern is just for files in current directory
+			entries, err := os.ReadDir(realCwd)
+			if err != nil {
+				return nil, err
+			}
+			
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				
+				matched, err := filepath.Match(pattern, entry.Name())
+				if err != nil || !matched {
+					continue
+				}
+				
+				realPath := filepath.Join(realCwd, entry.Name())
+				if s.shouldIgnore(realPath, entry.Name()) {
+					continue
+				}
+				
+				files = append(files, fileInfo{
+					virtualPath:  path.Join(cwd, entry.Name()),
+					realPath:     realPath,
+					relativePath: entry.Name(),
+				})
+			}
+		}
+		
+		return files, nil
+	}
+	
+	// Not a pattern, might be a directory name
+	vp := joinVirtual(cwd, pattern)
+	rp, err := s.realFromVirtual(vp)
+	if err != nil {
+		return nil, err
+	}
+	
+	info, err := os.Stat(rp)
+	if err != nil {
+		return nil, err
+	}
+	
+	if info.IsDir() {
+		return s.collectFilesFromDirectory(vp, rp)
+	}
+	
+	// Single file
+	files = append(files, fileInfo{
+		virtualPath:  vp,
+		realPath:     rp,
+		relativePath: filepath.Base(rp),
+	})
+	
+	return files, nil
+}
+
+// collectFilesFromDirectory recursively collects all files from a directory
+func (s *server) collectFilesFromDirectory(virtualDir, realDir string) ([]fileInfo, error) {
+	var files []fileInfo
+	baseDir := filepath.Base(realDir)
+	
+	err := filepath.Walk(realDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip files we can't access
+		}
+		
+		if info.IsDir() {
+			return nil
+		}
+		
+		// Check if file should be ignored
+		if s.shouldIgnore(path, filepath.Base(path)) {
+			return nil
+		}
+		
+		// Skip hidden files
+		if strings.HasPrefix(filepath.Base(path), ".") {
+			return nil
+		}
+		
+		relPath, err := filepath.Rel(realDir, path)
+		if err != nil {
+			return nil
+		}
+		
+		// Create path with directory name as prefix
+		archivePath := filepath.Join(baseDir, relPath)
+		
+		files = append(files, fileInfo{
+			virtualPath:  path,
+			realPath:     path,
+			relativePath: archivePath,
+		})
+		
+		return nil
+	})
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	return files, nil
+}
+
+// sendZipArchive creates and sends a zip archive containing the specified files
+func (s *server) sendZipArchive(w http.ResponseWriter, files []fileInfo, filename string) {
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	
+	zipWriter := zip.NewWriter(w)
+	defer zipWriter.Close()
+	
+	for _, file := range files {
+		// Open the file
+		f, err := os.Open(file.realPath)
+		if err != nil {
+			continue // Skip files we can't open
+		}
+		
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			continue
+		}
+		
+		// Create zip file header
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			f.Close()
+			continue
+		}
+		
+		// Use the relative path for the archive
+		header.Name = file.relativePath
+		header.Method = zip.Deflate
+		
+		// Create the file in the zip
+		writer, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			f.Close()
+			continue
+		}
+		
+		// Copy file content to zip
+		_, err = io.Copy(writer, f)
+		f.Close()
+		
+		if err != nil {
+			continue // Skip files with copy errors
+		}
+	}
+}
+
 // buildTree recursively builds a tree representation of the directory structure
 func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, showHidden bool, maxDepth, currentDepth int) (int, int) {
 	if maxDepth >= 0 && currentDepth >= maxDepth {
@@ -1328,42 +1593,95 @@ func urlQueryEscape(s string) string {
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
-	q := r.URL.Query().Get("path")
-	if q == "" {
-		http.Error(w, "missing path", http.StatusBadRequest)
-		return
-	}
-	// q is a virtual path (possibly like "/a/b.txt")
-	vp := cleanVirtual(q)
-	rp, err := s.realFromVirtual(joinVirtual(sess.cwd, vp))
-	if err != nil {
-		http.Error(w, "permission denied", http.StatusForbidden)
-		return
-	}
-	info, err := os.Stat(rp)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if info.IsDir() {
-		http.Error(w, "is a directory", http.StatusBadRequest)
-		return
-	}
-	f, err := os.Open(rp)
-	if err != nil {
-		http.Error(w, "cannot open", http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
+	
+	// Check if it's a single file download
+	if path := r.URL.Query().Get("path"); path != "" {
+		// Single file download
+		vp := cleanVirtual(path)
+		rp, err := s.realFromVirtual(joinVirtual(sess.cwd, vp))
+		if err != nil {
+			http.Error(w, "permission denied", http.StatusForbidden)
+			return
+		}
+		info, err := os.Stat(rp)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if info.IsDir() {
+			http.Error(w, "is a directory", http.StatusBadRequest)
+			return
+		}
+		f, err := os.Open(rp)
+		if err != nil {
+			http.Error(w, "cannot open", http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
 
-	filename := filepath.Base(rp)
-	ctype := mime.TypeByExtension(filepath.Ext(filename))
-	if ctype == "" {
-		ctype = "application/octet-stream"
+		filename := filepath.Base(rp)
+		ctype := mime.TypeByExtension(filepath.Ext(filename))
+		if ctype == "" {
+			ctype = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", ctype)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		http.ServeContent(w, r, filename, info.ModTime(), f)
+		return
 	}
-	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	http.ServeContent(w, r, filename, info.ModTime(), f)
+	
+	// Check if it's a directory download
+	if dir := r.URL.Query().Get("dir"); dir != "" {
+		vp := cleanVirtual(dir)
+		rp, err := s.realFromVirtual(vp)
+		if err != nil {
+			http.Error(w, "permission denied", http.StatusForbidden)
+			return
+		}
+		info, err := os.Stat(rp)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if !info.IsDir() {
+			http.Error(w, "not a directory", http.StatusBadRequest)
+			return
+		}
+		
+		files, err := s.collectFilesFromDirectory(vp, rp)
+		if err != nil {
+			http.Error(w, "failed to collect files", http.StatusInternalServerError)
+			return
+		}
+		
+		dirName := filepath.Base(rp)
+		s.sendZipArchive(w, files, dirName+".zip")
+		return
+	}
+	
+	// Pattern-based download
+	if pattern := r.URL.Query().Get("pattern"); pattern != "" {
+		cwd := r.URL.Query().Get("cwd")
+		if cwd == "" {
+			cwd = sess.cwd
+		}
+		
+		files, err := s.collectFilesForDownload(cwd, pattern)
+		if err != nil {
+			http.Error(w, "failed to collect files", http.StatusInternalServerError)
+			return
+		}
+		
+		if len(files) == 0 {
+			http.Error(w, "no matching files found", http.StatusNotFound)
+			return
+		}
+		
+		s.sendZipArchive(w, files, "archive.zip")
+		return
+	}
+	
+	http.Error(w, "missing download parameters", http.StatusBadRequest)
 }
 
 func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
