@@ -527,19 +527,15 @@ type configResp struct {
 	CatMax  int64   `json:"catMax"`
 	Readme  *string `json:"readme,omitempty"`
 	DocType string  `json:"docType,omitempty"`
+	CWD     string  `json:"cwd,omitempty"`
 }
 
 // ===== Handlers =====
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// If requesting root path, serve the main index.html
-	if r.URL.Path == "/" {
-		s.serveMainIndex(w, r)
-		return
-	}
-
-	// Otherwise, try to serve as static file
-	s.handleStaticFile(w, r)
+	// Always serve the main index.html for any path
+	// The client-side JavaScript will handle the routing
+	s.serveMainIndex(w, r)
 }
 
 func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
@@ -553,8 +549,8 @@ func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
 		htmlContent = embeddedIndex
 	}
 
-	// Replace placeholder with actual help message
-	processedHTML := s.processHTMLTemplate(htmlContent)
+	// Replace placeholder with actual help message and initial path
+	processedHTML := s.processHTMLTemplate(htmlContent, r.URL.Path)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -562,8 +558,9 @@ func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
-	// Clean the requested path
-	requestPath := path.Clean(r.URL.Path)
+	// Remove the /api/static prefix
+	requestPath := strings.TrimPrefix(r.URL.Path, "/api/static")
+	requestPath = path.Clean(requestPath)
 
 	// Convert virtual path to real filesystem path
 	realPath, err := s.realFromVirtual(requestPath)
@@ -604,7 +601,7 @@ func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // processHTMLTemplate replaces placeholders in HTML with dynamic content
-func (s *server) processHTMLTemplate(htmlContent []byte) []byte {
+func (s *server) processHTMLTemplate(htmlContent []byte, requestPath string) []byte {
 	// Split into lines and wrap each in HTML div tags
 	lines := strings.Split(strings.TrimSpace(renderHelp()), "\n")
 	var htmlLines []string
@@ -623,14 +620,48 @@ func (s *server) processHTMLTemplate(htmlContent []byte) []byte {
 	// Join all HTML lines into a single string (no newlines between them)
 	formattedHelpMessage := strings.Join(htmlLines, "")
 
-	// Replace the placeholder in HTML
+	// Clean the request path for initial CWD
+	initialPath := cleanVirtual(requestPath)
+	if initialPath == "" {
+		initialPath = "/"
+	}
+
+	// Replace the placeholders in HTML
 	result := strings.ReplaceAll(string(htmlContent), "{{HELP_MESSAGE}}", formattedHelpMessage)
+	result = strings.ReplaceAll(result, "{{INITIAL_PATH}}", initialPath)
 	return []byte(result)
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	readme, docType := readDocFile(s.rootAbs)
-	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme, DocType: docType})
+	sess := s.getSession(w, r)
+	
+	// Check if there's an initial path from the query parameter
+	initialPath := r.URL.Query().Get("path")
+	if initialPath != "" {
+		// Validate and set the initial path
+		newV := cleanVirtual(initialPath)
+		newReal, err := s.realFromVirtual(newV)
+		if err == nil {
+			info, err := os.Stat(newReal)
+			if err == nil && info.IsDir() {
+				sess.cwd = newV
+			}
+		}
+	}
+	
+	// Get readme for current directory
+	var readme string
+	var docType string
+	if sess.cwd == "/" {
+		readme, docType = readDocFile(s.rootAbs)
+	} else {
+		realCwd, err := s.realFromVirtual(sess.cwd)
+		if err == nil {
+			readme, docType = readDocFile(realCwd)
+		}
+	}
+	
+	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme, DocType: docType, CWD: sess.cwd})
 }
 
 func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -747,6 +778,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 		sess.cwd = newV
 		readme, docType := readDocFile(newReal)
+		// Include the new CWD in the response so client can update URL
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme, DocType: docType})
 		return
 
@@ -1825,11 +1857,12 @@ func main() {
 	s := newServer(rootAbs, *catMax)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/exec", s.handleExec)
 	mux.HandleFunc("/api/complete", s.handleComplete)
 	mux.HandleFunc("/api/download", s.handleDownload)
+	mux.HandleFunc("/api/static/", s.handleStaticFile)
+	mux.HandleFunc("/", s.handleIndex) // Catch-all route must be last
 
 	fmt.Printf("Serving %s on http://%s  (cat max = %d bytes)\n", rootAbs, *addr, *catMax)
 	srv := &http.Server{
