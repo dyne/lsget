@@ -625,11 +625,55 @@
     <div
       class="layout"
       data-signals='{ "ps1": "guest@browser:/$ ", "cwd": "/", "current": "", "buffer": "{{HELP_MESSAGE}}", "history": [], "histIndex": 0, "readme": "", "showReadme": false }'
+      data-on-load="
+        // Initialize path from URL
+        const initialPath = '{{INITIAL_PATH}}';
+        if (initialPath && initialPath !== '/') {
+          $cwd = initialPath;
+          $ps1 = `guest@browser:${initialPath}$ `;
+        }
+        
+        // Update browser history state
+        window.history.replaceState({ cwd: $cwd }, '', $cwd === '/' ? '/' : $cwd);
+        
+        // Handle browser back/forward buttons
+        window.addEventListener('popstate', (e) => {
+          if (e.state && e.state.cwd) {
+            $cwd = e.state.cwd;
+            $ps1 = `guest@browser:${e.state.cwd}$ `;
+            // Fetch readme for the new directory
+            fetch('/api/config?path=' + encodeURIComponent(e.state.cwd))
+              .then(r => r.json())
+              .then(res => {
+                if (res && res.readme) {
+                  $readme = renderDocument(res.readme, res.docType || 'markdown');
+                }
+              });
+          }
+        });
+      "
     >
       <div
         class="terminal"
         data-on-load="
             el.querySelector('#ghost').focus();
+            
+            // Fetch initial config with path from URL
+            const pathFromURL = window.location.pathname;
+            fetch('/api/config' + (pathFromURL !== '/' ? '?path=' + encodeURIComponent(pathFromURL) : ''))
+              .then(r => r.json())
+              .then(res => {
+                if (res) {
+                  if (res.cwd) {
+                    $cwd = res.cwd;
+                    $ps1 = `guest@browser:${res.cwd}$ `;
+                  }
+                  if (res.readme) {
+                    $readme = renderDocument(res.readme, res.docType || 'markdown');
+                  }
+                }
+              });
+            
             const init = window.INIT_README || '';
             $readme = init ? renderDocument(init, window.DOC_TYPE) : '';
             window.addEventListener('initreadme', (e) => {
@@ -673,6 +717,11 @@
                if (cwd !== undefined) {
                   $cwd = cwd;
                   $ps1 = `guest@browser:${cwd}$ `;
+                  // Update URL and browser history when directory changes
+                  const newPath = cwd === '/' ? '/' : cwd;
+                  if (window.location.pathname !== newPath) {
+                    window.history.pushState({ cwd: cwd }, '', newPath);
+                  }
                }
                if (res && Object.prototype.hasOwnProperty.call(res, 'readme')) {
                  $readme = res.readme ? renderDocument(res.readme, res.docType || 'markdown') : '';
