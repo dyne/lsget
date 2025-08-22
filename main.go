@@ -533,9 +533,62 @@ type configResp struct {
 // ===== Handlers =====
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// Always serve the main index.html for any path
-	// The client-side JavaScript will handle the routing
-	s.serveMainIndex(w, r)
+	// For root path, always serve index.html
+	if r.URL.Path == "/" {
+		s.serveMainIndex(w, r)
+		return
+	}
+
+	// For other paths, check if it's a file or directory
+	requestPath := path.Clean(r.URL.Path)
+	realPath, err := s.realFromVirtual(requestPath)
+	if err != nil {
+		// Path outside root, serve index.html for client-side routing
+		s.serveMainIndex(w, r)
+		return
+	}
+
+	// Check if path exists
+	info, err := os.Stat(realPath)
+	if err != nil {
+		// Path doesn't exist, serve index.html and let client handle it
+		s.serveMainIndex(w, r)
+		return
+	}
+
+	if info.IsDir() {
+		// It's a directory, serve index.html for navigation
+		s.serveMainIndex(w, r)
+	} else {
+		// It's a file, serve it directly for download
+		s.serveFile(w, r, realPath, info)
+	}
+}
+
+func (s *server) serveFile(w http.ResponseWriter, r *http.Request, realPath string, info os.FileInfo) {
+	// Check if file should be ignored based on .lsgetignore patterns
+	fileName := filepath.Base(realPath)
+	if s.shouldIgnore(realPath, fileName) {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Set appropriate content type based on file extension
+	contentType := mime.TypeByExtension(filepath.Ext(realPath))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	
+	// For certain file types, force download with Content-Disposition
+	ext := strings.ToLower(filepath.Ext(realPath))
+	switch ext {
+	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar", ".7z", ".tar", ".gz":
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+	}
+
+	// Serve the file
+	http.ServeFile(w, r, realPath)
 }
 
 func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
@@ -582,22 +635,8 @@ func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if file should be ignored based on .lsgetignore patterns
-	fileName := filepath.Base(realPath)
-	if s.shouldIgnore(realPath, fileName) {
-		http.NotFound(w, r)
-		return
-	}
-
-	// Set appropriate content type based on file extension
-	contentType := mime.TypeByExtension(filepath.Ext(realPath))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", contentType)
-
-	// Serve the file
-	http.ServeFile(w, r, realPath)
+	// Use the common serveFile function
+	s.serveFile(w, r, realPath, info)
 }
 
 // processHTMLTemplate replaces placeholders in HTML with dynamic content
