@@ -161,18 +161,20 @@
         fetch("/api/exec", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ input: "pwd" })
+          body: JSON.stringify({ input: "pwd" }),
         })
-        .then(r => r.json())
-        .then(res => {
-          if (res && res.cwd) {
-            // Update the datastar signals
-            window.dispatchEvent(new CustomEvent("syncCwd", {
-              detail: { cwd: res.cwd }
-            }));
-          }
-        })
-        .catch(() => {});
+          .then((r) => r.json())
+          .then((res) => {
+            if (res && res.cwd) {
+              // Update the datastar signals
+              window.dispatchEvent(
+                new CustomEvent("syncCwd", {
+                  detail: { cwd: res.cwd },
+                }),
+              );
+            }
+          })
+          .catch(() => {});
       });
       // Start a download by programmatically clicking an <a>
       window.startDownload = function (href) {
@@ -403,7 +405,6 @@
           font-size: 18px;
         }
         .layout {
-          max-width: 1920px;
           margin: 0 auto;
         }
       }
