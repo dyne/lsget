@@ -26,6 +26,10 @@ import (
 
 var version = "dev"
 
+// Indirections for testability
+var exitFunc = os.Exit
+var listenAndServe = func(srv *http.Server) error { return srv.ListenAndServe() }
+
 // ===== ANSI Color Codes =====
 
 const (
@@ -1879,18 +1883,18 @@ func main() {
 		fmt.Println()
 		fmt.Println("Repository: https://github.com/dyne/lsget")
 		fmt.Println("Website:    https://dyne.org")
-		os.Exit(0)
+		exitFunc(0)
 	}
 
 	rootAbs, err := filepath.Abs(*dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve dir: %v\n", err)
-		os.Exit(1)
+		exitFunc(1)
 	}
 	info, err := os.Stat(rootAbs)
 	if err != nil || !info.IsDir() {
 		fmt.Fprintf(os.Stderr, "dir is not a directory: %s\n", rootAbs)
-		os.Exit(1)
+		exitFunc(1)
 	}
 
 	s := newServer(rootAbs, *catMax)
@@ -1909,9 +1913,9 @@ func main() {
 		Handler:           logRequests(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := listenAndServe(srv); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-		os.Exit(1)
+		exitFunc(1)
 	}
 }
 

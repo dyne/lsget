@@ -17,3 +17,10 @@ tasks:
     desc: Run golangci-lint on the codebase
     cmds:
       - golangci-lint run ./...
+  test:
+    desc: Run tests on the codebase
+    cmds:
+      - go test -v ./...
+  clean:
+    cmds:
+      - rm -f lsget
