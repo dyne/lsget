@@ -715,9 +715,12 @@
            })
            .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
              .then((res) => {
-               const { output, download, cwd, clipboard } = res || {};
+               const { output, download, cwd, clipboard, html } = res || {};
              if (typeof output === 'string' && output.length) {
                $buffer += `<div class='line out'>${ansiToHtml(output)}</div>`;
+             }
+             if (html) {
+               $buffer += `<div class='line out'>${html}</div>`;
              }
              if (download) { startDownload(download); }
               if (clipboard) {

@@ -510,6 +510,7 @@ type execResp struct {
 	Readme    *string `json:"readme,omitempty"`
 	DocType   string  `json:"docType,omitempty"`
 	Clipboard string  `json:"clipboard,omitempty"`
+	HTML      string  `json:"html,omitempty"`
 }
 
 type completeReq struct {
@@ -843,7 +844,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "help":
-		_ = json.NewEncoder(w).Encode(execResp{Output: renderHelp()})
+		_ = json.NewEncoder(w).Encode(execResp{HTML: renderHelp()})
 		return
 
 	case "ls", "dir":

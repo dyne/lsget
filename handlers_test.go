@@ -57,7 +57,7 @@ func TestHandleExec_BasicPwdHelp(t *testing.T) {
     s := newTestServer(t)
     out := execJSON(t, s, "pwd")
     if out.Output != "/" || out.CWD != "/" { t.Fatalf("pwd: %#v", out) }
-    help := execJSON(t, s, "help").Output
+    help := execJSON(t, s, "help").HTML
     if !strings.Contains(help, "Available commands") { t.Fatalf("help: %q", help) }
 }
 
