@@ -66,6 +66,7 @@ const helpTpl = `Welcome to <span class="ps1">lsget</span> <span style="color: #
 • <strong>cd</strong> <span style="color: #888;">DIR</span> - <span style="color: #bbb;">change directory</span>
 • <strong>cat</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">view a text file</span>
 • <strong>get</strong>|<strong>rget</strong>|<strong>download</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">download a file</span>
+• <strong>url</strong>|<strong>share</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">get shareable URL (copies to clipboard)</span>
 • <strong>tree</strong> <span style="color: #888;">[-L&lt;DEPTH&gt;] [-a]</span> - <span style="color: #bbb;">directory structure</span>
 • <strong>find</strong> <span style="color: #888;">[PATH] [-name PATTERN] [-type f|d]</span> - <span style="color: #bbb;">search for files and directories</span>
 • <strong>grep</strong> <span style="color: #888;">[-r] [-i] [-n] PATTERN [FILE...]</span> - <span style="color: #bbb;">search for text patterns in files</span>
@@ -503,11 +504,12 @@ type execReq struct {
 }
 
 type execResp struct {
-	Output   string  `json:"output"`
-	Download string  `json:"download,omitempty"`
-	CWD      string  `json:"cwd,omitempty"`
-	Readme   *string `json:"readme,omitempty"`
-	DocType  string  `json:"docType,omitempty"`
+	Output    string  `json:"output"`
+	Download  string  `json:"download,omitempty"`
+	CWD       string  `json:"cwd,omitempty"`
+	Readme    *string `json:"readme,omitempty"`
+	DocType   string  `json:"docType,omitempty"`
+	Clipboard string  `json:"clipboard,omitempty"`
 }
 
 type completeReq struct {
@@ -1154,6 +1156,58 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
+		return
+
+	case "url", "share":
+		if len(argv) < 1 {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "url: missing file operand"})
+			return
+		}
+		
+		vp := joinVirtual(sess.cwd, argv[0])
+		rp, err := s.realFromVirtual(vp)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "url: permission denied"})
+			return
+		}
+		
+		info, err := os.Stat(rp)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "url: no such file or directory"})
+			return
+		}
+		
+		if info.IsDir() {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "url: cannot share directories (use 'get' to download as zip)"})
+			return
+		}
+		
+		// Check if file should be ignored
+		if s.shouldIgnore(rp, filepath.Base(rp)) {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "url: file is ignored"})
+			return
+		}
+		
+		// Get the host from the request
+		host := r.Host
+		if host == "" {
+			host = "localhost:8080"
+		}
+		
+		// Determine protocol (check if request came through HTTPS)
+		protocol := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			protocol = "https"
+		}
+		
+		// Build the full URL for the file
+		fileURL := fmt.Sprintf("%s://%s/api/static%s", protocol, host, vp)
+		
+		// Return the URL with clipboard instruction
+		_ = json.NewEncoder(w).Encode(execResp{
+			Output:    fmt.Sprintf("Shareable URL: %s\n%sURL copied to clipboard!%s", fileURL, colorGreen, colorReset),
+			Clipboard: fileURL,
+		})
 		return
 
 	case "grep":

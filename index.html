@@ -715,11 +715,17 @@
            })
            .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
              .then((res) => {
-               const { output, download, cwd } = res || {};
+               const { output, download, cwd, clipboard } = res || {};
              if (typeof output === 'string' && output.length) {
                $buffer += `<div class='line out'>${ansiToHtml(output)}</div>`;
              }
              if (download) { startDownload(download); }
+              if (clipboard) {
+                // Copy to clipboard
+                navigator.clipboard.writeText(clipboard).catch(err => {
+                  console.error('Failed to copy to clipboard:', err);
+                });
+              }
                if (cwd !== undefined) {
                   $cwd = cwd;
                   $ps1 = `guest@browser:${cwd}$ `;
@@ -750,11 +756,13 @@
            const isCd = (cmd === 'cd');
            const isCat = (cmd === 'cat');
            const isGet = (cmd === 'get' || cmd === 'rget' || cmd === 'download');
-           if (isCd || isCat || isGet) {
+           const isUrl = (cmd === 'url' || cmd === 'share');
+           if (isCd || isCat || isGet || isUrl) {
              const body = { path: arg || '', dirsOnly: false, filesOnly: false, maxSize: 0, textOnly: false };
              if (isCd) { body.dirsOnly = true; }
              if (isCat) { body.filesOnly = true; body.textOnly = true; body.maxSize = (window.CAT_MAX||0); }
              if (isGet) { body.filesOnly = true; }
+             if (isUrl) { body.filesOnly = true; }
              fetch('/api/complete', {
                method: 'POST', headers: { 'Content-Type': 'application/json' },
                body: JSON.stringify(body)

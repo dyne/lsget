@@ -1,0 +1,2 @@
+This is a test file for the share/url command.
+It can be shared via a URL that will be copied to the clipboard.
