@@ -4,10 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>📂 lsget</title>
-    
+
     <!-- No-JS fallback: redirect to plain HTML version -->
     <noscript>
-      <meta http-equiv="refresh" content="0; url=?nojs=1">
+      <meta http-equiv="refresh" content="0; url=?nojs=1" />
     </noscript>
 
     <!-- Helpers FIRST so they're available before Datastar evaluates attributes -->
@@ -758,7 +758,7 @@
            let arg = m && m[2] !== undefined ? m[2] : '';
            const isCd = (cmd === 'cd');
            const isCat = (cmd === 'cat');
-           const isGet = (cmd === 'get' || cmd === 'rget' || cmd === 'download');
+           const isGet = (cmd === 'wget' || cmd === 'get' || cmd === 'rget' || cmd === 'download');
            const isUrl = (cmd === 'url' || cmd === 'share');
            if (isCd || isCat || isGet || isUrl) {
              const body = { path: arg || '', dirsOnly: false, filesOnly: false, maxSize: 0, textOnly: false };

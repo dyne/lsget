@@ -27,8 +27,10 @@ import (
 var version = "dev"
 
 // Indirections for testability
-var exitFunc = os.Exit
-var listenAndServe = func(srv *http.Server) error { return srv.ListenAndServe() }
+var (
+	exitFunc       = os.Exit
+	listenAndServe = func(srv *http.Server) error { return srv.ListenAndServe() }
+)
 
 // ===== ANSI Color Codes =====
 
@@ -65,7 +67,7 @@ const helpTpl = `Welcome to <span class="ps1">lsget</span> <span style="color: #
 • <strong>ls</strong> <span style="color: #888;">[-l]</span>|<strong>dir</strong> <span style="color: #888;">[-l]</span> - <span style="color: #bbb;">list files</span>
 • <strong>cd</strong> <span style="color: #888;">DIR</span> - <span style="color: #bbb;">change directory</span>
 • <strong>cat</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">view a text file</span>
-• <strong>get</strong>|<strong>rget</strong>|<strong>download</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">download a file</span>
+• <strong>get</strong>|<strong>wget</strong>|<strong>download</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">download a file</span>
 • <strong>url</strong>|<strong>share</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">get shareable URL (copies to clipboard)</span>
 • <strong>tree</strong> <span style="color: #888;">[-L&lt;DEPTH&gt;] [-a]</span> - <span style="color: #bbb;">directory structure</span>
 • <strong>find</strong> <span style="color: #888;">[PATH] [-name PATTERN] [-type f|d]</span> - <span style="color: #bbb;">search for files and directories</span>
@@ -76,7 +78,7 @@ const helpTpl = `Welcome to <span class="ps1">lsget</span> <span style="color: #
 `
 
 func renderHelp() string {
-	var helpMessage = template.Must(template.New("help").Parse(helpTpl))
+	helpMessage := template.Must(template.New("help").Parse(helpTpl))
 	var b bytes.Buffer
 	_ = helpMessage.Execute(&b, struct{ Version string }{Version: version})
 	return b.String()
@@ -542,7 +544,7 @@ type configResp struct {
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Check for no-JS fallback query parameter
 	noJS := r.URL.Query().Get("nojs") == "1"
-	
+
 	// For root path, check if we need no-JS fallback
 	if r.URL.Path == "/" {
 		if noJS {
@@ -605,7 +607,7 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, realPath stri
 		contentType = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", contentType)
-	
+
 	// For certain file types, force download with Content-Disposition
 	ext := strings.ToLower(filepath.Ext(realPath))
 	switch ext {
@@ -791,7 +793,7 @@ func (s *server) processHTMLTemplate(htmlContent []byte, requestPath string) []b
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
-	
+
 	// Check if there's an initial path from the query parameter
 	initialPath := r.URL.Query().Get("path")
 	if initialPath != "" {
@@ -805,7 +807,7 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	// Get readme for current directory
 	var readme string
 	var docType string
@@ -817,7 +819,7 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			readme, docType = readDocFile(realCwd)
 		}
 	}
-	
+
 	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme, DocType: docType, CWD: sess.cwd})
 }
 
@@ -983,14 +985,14 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(execResp{Output: string(sample)})
 		return
 
-	case "get", "rget", "download":
+	case "get", "rget", "wget", "download":
 		if len(argv) < 1 {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: missing operand"})
 			return
 		}
-		
+
 		pattern := argv[0]
-		
+
 		// Check if pattern contains wildcards or is a directory
 		if strings.ContainsAny(pattern, "*?[") || pattern == "." {
 			// Handle pattern-based download (multiple files)
@@ -1014,7 +1016,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: url})
 			return
 		}
-		
+
 		// Check if it's a directory
 		vp := joinVirtual(sess.cwd, pattern)
 		rp, err := s.realFromVirtual(vp)
@@ -1027,7 +1029,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: no such file"})
 			return
 		}
-		
+
 		if info.IsDir() {
 			// Download directory as zip
 			files, err := s.collectFilesFromDirectory(vp, rp)
@@ -1044,7 +1046,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading directory '%s' with %d files as %s.zip", dirName, len(files), dirName), Download: url})
 			return
 		}
-		
+
 		// Single file download
 		url := "/api/download?path=" + urlEscapeVirtual(vp)
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
@@ -1164,46 +1166,46 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: missing file operand"})
 			return
 		}
-		
+
 		vp := joinVirtual(sess.cwd, argv[0])
 		rp, err := s.realFromVirtual(vp)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: permission denied"})
 			return
 		}
-		
+
 		info, err := os.Stat(rp)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: no such file or directory"})
 			return
 		}
-		
+
 		if info.IsDir() {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: cannot share directories (use 'get' to download as zip)"})
 			return
 		}
-		
+
 		// Check if file should be ignored
 		if s.shouldIgnore(rp, filepath.Base(rp)) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: file is ignored"})
 			return
 		}
-		
+
 		// Get the host from the request
 		host := r.Host
 		if host == "" {
 			host = "localhost:8080"
 		}
-		
+
 		// Determine protocol (check if request came through HTTPS)
 		protocol := "http"
 		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 			protocol = "https"
 		}
-		
+
 		// Build the full URL for the file
 		fileURL := fmt.Sprintf("%s://%s/api/static%s", protocol, host, vp)
-		
+
 		// Return the URL with clipboard instruction
 		_ = json.NewEncoder(w).Encode(execResp{
 			Output:    fmt.Sprintf("Shareable URL: %s\n%sURL copied to clipboard!%s", fileURL, colorGreen, colorReset),
@@ -1514,15 +1516,15 @@ func (s *server) grepInDirectory(realPath, virtualPath, pattern string, ignoreCa
 
 // fileInfo holds information about a file for zip archive creation
 type fileInfo struct {
-	virtualPath string
-	realPath    string
+	virtualPath  string
+	realPath     string
 	relativePath string
 }
 
 // collectFilesForDownload collects files matching a pattern for download
 func (s *server) collectFilesForDownload(cwd, pattern string) ([]fileInfo, error) {
 	var files []fileInfo
-	
+
 	// Handle special case for current directory
 	if pattern == "." {
 		realCwd, err := s.realFromVirtual(cwd)
@@ -1531,46 +1533,46 @@ func (s *server) collectFilesForDownload(cwd, pattern string) ([]fileInfo, error
 		}
 		return s.collectFilesFromDirectory(cwd, realCwd)
 	}
-	
+
 	// Handle wildcard patterns
 	if strings.ContainsAny(pattern, "*?[") {
 		realCwd, err := s.realFromVirtual(cwd)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		// Check if pattern contains directory separator
 		if strings.Contains(pattern, "/") {
 			// Pattern includes path, need to handle directory traversal
 			dir := filepath.Dir(pattern)
 			filePattern := filepath.Base(pattern)
-			
+
 			vDir := joinVirtual(cwd, dir)
 			rDir, err := s.realFromVirtual(vDir)
 			if err != nil {
 				return nil, err
 			}
-			
+
 			entries, err := os.ReadDir(rDir)
 			if err != nil {
 				return nil, err
 			}
-			
+
 			for _, entry := range entries {
 				if entry.IsDir() {
 					continue
 				}
-				
+
 				matched, err := filepath.Match(filePattern, entry.Name())
 				if err != nil || !matched {
 					continue
 				}
-				
+
 				realPath := filepath.Join(rDir, entry.Name())
 				if s.shouldIgnore(realPath, entry.Name()) {
 					continue
 				}
-				
+
 				files = append(files, fileInfo{
 					virtualPath:  path.Join(vDir, entry.Name()),
 					realPath:     realPath,
@@ -1583,22 +1585,22 @@ func (s *server) collectFilesForDownload(cwd, pattern string) ([]fileInfo, error
 			if err != nil {
 				return nil, err
 			}
-			
+
 			for _, entry := range entries {
 				if entry.IsDir() {
 					continue
 				}
-				
+
 				matched, err := filepath.Match(pattern, entry.Name())
 				if err != nil || !matched {
 					continue
 				}
-				
+
 				realPath := filepath.Join(realCwd, entry.Name())
 				if s.shouldIgnore(realPath, entry.Name()) {
 					continue
 				}
-				
+
 				files = append(files, fileInfo{
 					virtualPath:  path.Join(cwd, entry.Name()),
 					realPath:     realPath,
@@ -1606,33 +1608,33 @@ func (s *server) collectFilesForDownload(cwd, pattern string) ([]fileInfo, error
 				})
 			}
 		}
-		
+
 		return files, nil
 	}
-	
+
 	// Not a pattern, might be a directory name
 	vp := joinVirtual(cwd, pattern)
 	rp, err := s.realFromVirtual(vp)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	info, err := os.Stat(rp)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if info.IsDir() {
 		return s.collectFilesFromDirectory(vp, rp)
 	}
-	
+
 	// Single file
 	files = append(files, fileInfo{
 		virtualPath:  vp,
 		realPath:     rp,
 		relativePath: filepath.Base(rp),
 	})
-	
+
 	return files, nil
 }
 
@@ -1640,47 +1642,46 @@ func (s *server) collectFilesForDownload(cwd, pattern string) ([]fileInfo, error
 func (s *server) collectFilesFromDirectory(virtualDir, realDir string) ([]fileInfo, error) {
 	var files []fileInfo
 	baseDir := filepath.Base(realDir)
-	
+
 	err := filepath.Walk(realDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files we can't access
 		}
-		
+
 		if info.IsDir() {
 			return nil
 		}
-		
+
 		// Check if file should be ignored
 		if s.shouldIgnore(path, filepath.Base(path)) {
 			return nil
 		}
-		
+
 		// Skip hidden files
 		if strings.HasPrefix(filepath.Base(path), ".") {
 			return nil
 		}
-		
+
 		relPath, err := filepath.Rel(realDir, path)
 		if err != nil {
 			return nil
 		}
-		
+
 		// Create path with directory name as prefix
 		archivePath := filepath.Join(baseDir, relPath)
-		
+
 		files = append(files, fileInfo{
 			virtualPath:  path,
 			realPath:     path,
 			relativePath: archivePath,
 		})
-		
+
 		return nil
 	})
-	
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return files, nil
 }
 
@@ -1688,45 +1689,45 @@ func (s *server) collectFilesFromDirectory(virtualDir, realDir string) ([]fileIn
 func (s *server) sendZipArchive(w http.ResponseWriter, files []fileInfo, filename string) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	
+
 	zipWriter := zip.NewWriter(w)
 	defer zipWriter.Close()
-	
+
 	for _, file := range files {
 		// Open the file
 		f, err := os.Open(file.realPath)
 		if err != nil {
 			continue // Skip files we can't open
 		}
-		
+
 		info, err := f.Stat()
 		if err != nil {
 			f.Close()
 			continue
 		}
-		
+
 		// Create zip file header
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			f.Close()
 			continue
 		}
-		
+
 		// Use the relative path for the archive
 		header.Name = file.relativePath
 		header.Method = zip.Deflate
-		
+
 		// Create the file in the zip
 		writer, err := zipWriter.CreateHeader(header)
 		if err != nil {
 			f.Close()
 			continue
 		}
-		
+
 		// Copy file content to zip
 		_, err = io.Copy(writer, f)
 		f.Close()
-		
+
 		if err != nil {
 			continue // Skip files with copy errors
 		}
@@ -1834,7 +1835,7 @@ func urlQueryEscape(s string) string {
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
-	
+
 	// Check if it's a single file download
 	if path := r.URL.Query().Get("path"); path != "" {
 		// Single file download
@@ -1870,7 +1871,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		http.ServeContent(w, r, filename, info.ModTime(), f)
 		return
 	}
-	
+
 	// Check if it's a directory download
 	if dir := r.URL.Query().Get("dir"); dir != "" {
 		vp := cleanVirtual(dir)
@@ -1888,40 +1889,40 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not a directory", http.StatusBadRequest)
 			return
 		}
-		
+
 		files, err := s.collectFilesFromDirectory(vp, rp)
 		if err != nil {
 			http.Error(w, "failed to collect files", http.StatusInternalServerError)
 			return
 		}
-		
+
 		dirName := filepath.Base(rp)
 		s.sendZipArchive(w, files, dirName+".zip")
 		return
 	}
-	
+
 	// Pattern-based download
 	if pattern := r.URL.Query().Get("pattern"); pattern != "" {
 		cwd := r.URL.Query().Get("cwd")
 		if cwd == "" {
 			cwd = sess.cwd
 		}
-		
+
 		files, err := s.collectFilesForDownload(cwd, pattern)
 		if err != nil {
 			http.Error(w, "failed to collect files", http.StatusInternalServerError)
 			return
 		}
-		
+
 		if len(files) == 0 {
 			http.Error(w, "no matching files found", http.StatusNotFound)
 			return
 		}
-		
+
 		s.sendZipArchive(w, files, "archive.zip")
 		return
 	}
-	
+
 	http.Error(w, "missing download parameters", http.StatusBadRequest)
 }
 
