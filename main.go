@@ -537,9 +537,16 @@ type configResp struct {
 // ===== Handlers =====
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// For root path, always serve index.html
+	// Check for no-JS fallback query parameter
+	noJS := r.URL.Query().Get("nojs") == "1"
+	
+	// For root path, check if we need no-JS fallback
 	if r.URL.Path == "/" {
-		s.serveMainIndex(w, r)
+		if noJS {
+			s.serveNoJSDirectory(w, r, "/")
+		} else {
+			s.serveMainIndex(w, r)
+		}
 		return
 	}
 
@@ -547,22 +554,34 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	requestPath := path.Clean(r.URL.Path)
 	realPath, err := s.realFromVirtual(requestPath)
 	if err != nil {
-		// Path outside root, serve index.html for client-side routing
-		s.serveMainIndex(w, r)
+		// Path outside root, serve appropriate response
+		if noJS {
+			http.NotFound(w, r)
+		} else {
+			s.serveMainIndex(w, r)
+		}
 		return
 	}
 
 	// Check if path exists
 	info, err := os.Stat(realPath)
 	if err != nil {
-		// Path doesn't exist, serve index.html and let client handle it
-		s.serveMainIndex(w, r)
+		// Path doesn't exist
+		if noJS {
+			http.NotFound(w, r)
+		} else {
+			s.serveMainIndex(w, r)
+		}
 		return
 	}
 
 	if info.IsDir() {
-		// It's a directory, serve index.html for navigation
-		s.serveMainIndex(w, r)
+		// It's a directory
+		if noJS {
+			s.serveNoJSDirectory(w, r, requestPath)
+		} else {
+			s.serveMainIndex(w, r)
+		}
 	} else {
 		// It's a file, serve it directly for download
 		s.serveFile(w, r, realPath, info)
@@ -612,6 +631,98 @@ func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(processedHTML)
+}
+
+// serveNoJSDirectory serves a plain HTML directory listing for no-JS fallback
+func (s *server) serveNoJSDirectory(w http.ResponseWriter, r *http.Request, virtualPath string) {
+	realPath, err := s.realFromVirtual(virtualPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	entries, err := os.ReadDir(realPath)
+	if err != nil {
+		http.Error(w, "Error reading directory", http.StatusInternalServerError)
+		return
+	}
+
+	// Start HTML document
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	// Write minimal HTML with monospace font and blue links
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head>
+<title>Index of %s</title>
+<style>
+body { font-family: monospace; margin: 20px; }
+a { color: blue; text-decoration: underline; }
+a:visited { color: blue; }
+</style>
+</head>
+<body>
+`, virtualPath)
+
+	fmt.Fprintf(w, "<h1>Index of %s</h1>\n", virtualPath)
+	fmt.Fprintf(w, "<hr>\n")
+
+	// Add parent directory link if not at root
+	if virtualPath != "/" {
+		parentPath := path.Dir(virtualPath)
+		fmt.Fprintf(w, "<a href=\"%s?nojs=1\">[Parent Directory]</a><br>\n", parentPath)
+	}
+
+	// List directories first, then files
+	var dirs []os.DirEntry
+	var files []os.DirEntry
+
+	for _, entry := range entries {
+		name := entry.Name()
+		// Skip hidden files
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		// Check if should be ignored
+		realFilePath := filepath.Join(realPath, name)
+		if s.shouldIgnore(realFilePath, name) {
+			continue
+		}
+
+		if entry.IsDir() {
+			dirs = append(dirs, entry)
+		} else {
+			files = append(files, entry)
+		}
+	}
+
+	// Sort alphabetically
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].Name() < dirs[j].Name()
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Name() < files[j].Name()
+	})
+
+	// Display directories
+	for _, dir := range dirs {
+		dirPath := path.Join(virtualPath, dir.Name())
+		fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", dirPath, dir.Name())
+	}
+
+	// Display files
+	for _, file := range files {
+		filePath := path.Join(virtualPath, file.Name())
+		info, _ := file.Info()
+		var size string
+		if info != nil {
+			size = fmt.Sprintf(" (%d bytes)", info.Size())
+		}
+		fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", filePath, file.Name(), size)
+	}
+
+	fmt.Fprintf(w, "</body>\n</html>\n")
 }
 
 func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
