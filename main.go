@@ -2086,11 +2086,71 @@ func main() {
 	}
 }
 
+// responseLogger wraps a ResponseWriter to capture status code and response size
+type responseLogger struct {
+	http.ResponseWriter
+	statusCode int
+	size       int
+}
+
+func (rl *responseLogger) WriteHeader(code int) {
+	rl.statusCode = code
+	rl.ResponseWriter.WriteHeader(code)
+}
+
+func (rl *responseLogger) Write(b []byte) (int, error) {
+	if rl.statusCode == 0 {
+		rl.statusCode = http.StatusOK
+	}
+	size, err := rl.ResponseWriter.Write(b)
+	rl.size += size
+	return size, err
+}
+
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		d := time.Since(start)
-		fmt.Printf("%s %s %s\n", r.Method, r.URL.Path, d.Truncate(time.Millisecond))
+		// Wrap the ResponseWriter to capture status code and size
+		rl := &responseLogger{ResponseWriter: w}
+		
+		next.ServeHTTP(rl, r)
+
+		// Get remote IP address
+		ip := r.RemoteAddr
+		if colon := strings.LastIndex(ip, ":"); colon != -1 {
+			ip = ip[:colon]
+		}
+
+		// Get user identifier (using "-" as we don't have user auth)
+		user := "-"
+
+		// Get timestamp in CLF format
+		timestamp := time.Now().Format("[02/Jan/2006:15:04:05 -0700]")
+
+		// Get request line
+		requestLine := fmt.Sprintf("%s %s %s", r.Method, r.URL.RequestURI(), r.Proto)
+
+		// Get status code and response size
+		statusCode := rl.statusCode
+		responseSize := rl.size
+
+		// Get referer and user agent
+		referer := r.Referer()
+		if referer == "" {
+			referer = "-"
+		}
+		userAgent := r.UserAgent()
+		if userAgent == "" {
+			userAgent = "-"
+		}
+
+		// Combined Log Format:
+		// "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i"
+		sizeStr := "-"
+		if responseSize > 0 {
+			sizeStr = fmt.Sprintf("%d", responseSize)
+		}
+		
+		fmt.Printf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"\n",
+			ip, "-", user, timestamp, requestLine, statusCode, sizeStr, referer, userAgent)
 	})
 }
