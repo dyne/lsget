@@ -24,3 +24,6 @@ tasks:
   clean:
     cmds:
       - rm -f lsget
+  lsget:
+    cmds:
+      - go build -o lsget ./...

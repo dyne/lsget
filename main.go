@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	_ "embed"
 	"encoding/json"
@@ -15,11 +16,13 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -30,6 +33,7 @@ var version = "dev"
 var (
 	exitFunc       = os.Exit
 	listenAndServe = func(srv *http.Server) error { return srv.ListenAndServe() }
+	pidFile        = ""
 )
 
 // ===== ANSI Color Codes =====
@@ -2038,6 +2042,7 @@ func main() {
 		addr         = flag.String("addr", "localhost:8080", "address to listen on")
 		dir          = flag.String("dir", ".", "directory to expose as root")
 		catMax       = flag.Int64("catmax", 256*1024, "max bytes printable via `cat` and used by completion")
+		pidFileFlag  = flag.String("pid", "", "path to PID file")
 	)
 	flag.Parse()
 
@@ -2066,6 +2071,18 @@ func main() {
 
 	s := newServer(rootAbs, *catMax)
 
+	// Create PID file if specified
+	if *pidFileFlag != "" {
+		pid := os.Getpid()
+		pidStr := fmt.Sprintf("%d", pid)
+		if err := os.WriteFile(*pidFileFlag, []byte(pidStr), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to create PID file: %v\n", err)
+			exitFunc(1)
+		}
+		// Store PID file path for cleanup
+		pidFile = *pidFileFlag
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/exec", s.handleExec)
@@ -2080,10 +2097,35 @@ func main() {
 		Handler:           logRequests(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	// Handle graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		for range c {
+			fmt.Println("\nShutting down server...")
+			// Remove PID file if it exists
+			if pidFile != "" {
+				_ = os.Remove(pidFile)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "server shutdown error: %v\n", err)
+			}
+			exitFunc(0)
+		}
+	}()
+
 	if err := listenAndServe(srv); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		// Remove PID file on error
+		if pidFile != "" {
+			_ = os.Remove(pidFile)
+		}
 		exitFunc(1)
-	}
+}
 }
 
 // responseLogger wraps a ResponseWriter to capture status code and response size

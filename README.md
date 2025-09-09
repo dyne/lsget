@@ -82,6 +82,7 @@ Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 | `-addr`     | `localhost:8080`   | HTTP listen address. |
 | `-dir`      | `.` (cwd)          | Directory to expose as `/`. |
 | `-catmax`   | `262144` (256 KiB) | Max bytes printable via `cat` & completion filter. |
+| `-pid`      | `` (none)          | Path to PID file. |
 
 
 **[🔝 back to top](#toc)**
