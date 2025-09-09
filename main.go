@@ -98,7 +98,7 @@ func getFileColor(info os.FileInfo, name string) string {
 	}
 
 	// Executable files
-	if mode&0111 != 0 {
+	if mode&0o111 != 0 {
 		return colorGreen
 	}
 
@@ -265,7 +265,7 @@ func parseIgnoreFile(ignoreFilePath string) ([]string, error) {
 		}
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var patterns []string
 	scanner := bufio.NewScanner(file)
@@ -661,7 +661,7 @@ func (s *server) serveNoJSDirectory(w http.ResponseWriter, r *http.Request, virt
 	w.WriteHeader(http.StatusOK)
 
 	// Write minimal HTML with monospace font and blue links
-	fmt.Fprintf(w, `<!DOCTYPE html>
+	_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
 <title>Index of %s</title>
@@ -674,13 +674,13 @@ a:visited { color: blue; }
 <body>
 `, virtualPath)
 
-	fmt.Fprintf(w, "<h1>Index of %s</h1>\n", virtualPath)
-	fmt.Fprintf(w, "<hr>\n")
+	_, _ = fmt.Fprintf(w, "<h1>Index of %s</h1>\n", virtualPath)
+	_, _ = fmt.Fprintf(w, "<hr>\n")
 
 	// Add parent directory link if not at root
 	if virtualPath != "/" {
 		parentPath := path.Dir(virtualPath)
-		fmt.Fprintf(w, "<a href=\"%s?nojs=1\">[Parent Directory]</a><br>\n", parentPath)
+		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">[Parent Directory]</a><br>\n", parentPath)
 	}
 
 	// List directories first, then files
@@ -717,7 +717,7 @@ a:visited { color: blue; }
 	// Display directories
 	for _, dir := range dirs {
 		dirPath := path.Join(virtualPath, dir.Name())
-		fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", dirPath, dir.Name())
+		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", dirPath, dir.Name())
 	}
 
 	// Display files
@@ -728,10 +728,10 @@ a:visited { color: blue; }
 		if info != nil {
 			size = fmt.Sprintf(" (%d bytes)", info.Size())
 		}
-		fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", filePath, file.Name(), size)
+		_, _ = fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", filePath, file.Name(), size)
 	}
 
-	fmt.Fprintf(w, "</body>\n</html>\n")
+	_, _ = fmt.Fprintf(w, "</body>\n</html>\n")
 }
 
 func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
@@ -974,7 +974,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: cannot open file"})
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		// read up to catMax bytes
 		var buf bytes.Buffer
 		if _, err := io.CopyN(&buf, f, s.catMax); err != nil && !errors.Is(err, io.EOF) {
@@ -1108,9 +1108,9 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	case "find":
 		// Parse options
-		var searchPath string = sess.cwd
-		var namePattern string = "*"
-		var typeFilter string = "" // "f" for files, "d" for directories, "" for both
+		searchPath := sess.cwd
+		namePattern := "*"
+		typeFilter := "" // "f" for files, "d" for directories, "" for both
 
 		// Parse arguments
 		for i := 0; i < len(argv); i++ {
@@ -1387,7 +1387,7 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Check if file is likely to be text
 	info, err := file.Stat()
@@ -1695,7 +1695,7 @@ func (s *server) sendZipArchive(w http.ResponseWriter, files []fileInfo, filenam
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 
 	zipWriter := zip.NewWriter(w)
-	defer zipWriter.Close()
+	defer func() { _ = zipWriter.Close() }()
 
 	for _, file := range files {
 		// Open the file
@@ -1706,14 +1706,14 @@ func (s *server) sendZipArchive(w http.ResponseWriter, files []fileInfo, filenam
 
 		info, err := f.Stat()
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			continue
 		}
 
 		// Create zip file header
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			continue
 		}
 
@@ -1724,13 +1724,13 @@ func (s *server) sendZipArchive(w http.ResponseWriter, files []fileInfo, filenam
 		// Create the file in the zip
 		writer, err := zipWriter.CreateHeader(header)
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			continue
 		}
 
 		// Copy file content to zip
 		_, err = io.Copy(writer, f)
-		f.Close()
+		_ = f.Close()
 
 		if err != nil {
 			continue // Skip files with copy errors
@@ -1863,7 +1863,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cannot open", http.StatusInternalServerError)
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		filename := filepath.Base(rp)
 		ctype := mime.TypeByExtension(filepath.Ext(filename))
@@ -2075,7 +2075,7 @@ func main() {
 	if *pidFileFlag != "" {
 		pid := os.Getpid()
 		pidStr := fmt.Sprintf("%d", pid)
-		if err := os.WriteFile(*pidFileFlag, []byte(pidStr), 0644); err != nil {
+		if err := os.WriteFile(*pidFileFlag, []byte(pidStr), 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to create PID file: %v\n", err)
 			exitFunc(1)
 		}
@@ -2103,17 +2103,17 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		for range c {
-			fmt.Println("\nShutting down server...")
+		for sig := range c {
+			fmt.Printf("\nReceived signal %s, shutting down server...\n", sig)
 			// Remove PID file if it exists
 			if pidFile != "" {
 				_ = os.Remove(pidFile)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
 			if err := srv.Shutdown(ctx); err != nil {
 				fmt.Fprintf(os.Stderr, "server shutdown error: %v\n", err)
 			}
+			cancel()
 			exitFunc(0)
 		}
 	}()
@@ -2125,7 +2125,7 @@ func main() {
 			_ = os.Remove(pidFile)
 		}
 		exitFunc(1)
-}
+	}
 }
 
 // responseLogger wraps a ResponseWriter to capture status code and response size
@@ -2153,7 +2153,7 @@ func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Wrap the ResponseWriter to capture status code and size
 		rl := &responseLogger{ResponseWriter: w}
-		
+
 		next.ServeHTTP(rl, r)
 
 		// Get remote IP address
@@ -2191,7 +2191,7 @@ func logRequests(next http.Handler) http.Handler {
 		if responseSize > 0 {
 			sizeStr = fmt.Sprintf("%d", responseSize)
 		}
-		
+
 		fmt.Printf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"\n",
 			ip, "-", user, timestamp, requestLine, statusCode, sizeStr, referer, userAgent)
 	})

@@ -9,11 +9,11 @@ import (
 func TestCollectFilesForDownload(t *testing.T) {
 	// Create test directory structure
 	testDir := "test_download_dir"
-	os.RemoveAll(testDir)
+	_ = os.RemoveAll(testDir)
 	if err := os.MkdirAll(testDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(testDir)
+	defer func() { _ = os.RemoveAll(testDir) }()
 
 	// Create test files
 	if err := os.WriteFile(filepath.Join(testDir, "file1.png"), []byte("content1"), 0644); err != nil {
@@ -60,11 +60,11 @@ func TestCollectFilesForDownload(t *testing.T) {
 func TestCollectFilesFromDirectory(t *testing.T) {
 	// Create test directory structure
 	testDir := "test_dir_collect"
-	os.RemoveAll(testDir)
+	_ = os.RemoveAll(testDir)
 	if err := os.MkdirAll(testDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(testDir)
+	defer func() { _ = os.RemoveAll(testDir) }()
 
 	// Create test files
 	if err := os.WriteFile(filepath.Join(testDir, "file1.txt"), []byte("content1"), 0644); err != nil {
