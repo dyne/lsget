@@ -856,19 +856,46 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	case "ls", "dir":
 		long := false
 		showHidden := false
+		target := sess.cwd
+		// Parse arguments: flags and optional path
 		for _, arg := range argv {
-			if strings.Contains(arg, "l") {
-				long = true
-			}
-			if strings.Contains(arg, "a") {
-				showHidden = true
+			if strings.HasPrefix(arg, "-") {
+				// Handle flags
+				if strings.Contains(arg, "l") {
+					long = true
+				}
+				if strings.Contains(arg, "a") {
+					showHidden = true
+				}
+			} else {
+				// First non-flag argument is the path
+				target = arg
 			}
 		}
-		realCwd, err := s.realFromVirtual(sess.cwd)
+		// Get the real path of the directory to list
+		virtualPath := joinVirtual(sess.cwd, target)
+		realCwd, err := s.realFromVirtual(virtualPath)
 		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
+			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: permission denied"})
 			return
 		}
+		// Get file info and check if it's a directory
+		info, err := os.Stat(realCwd)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: cannot access '" + target + "': No such file or directory"})
+			return
+		}
+		// If path is a file, show just the file
+		if !info.IsDir() {
+			// If it's a file, show the file in the listing
+			if long {
+				_ = json.NewEncoder(w).Encode(execResp{Output: formatLong(info, colorizeName(info, filepath.Base(realCwd)))})
+			} else {
+				_ = json.NewEncoder(w).Encode(execResp{Output: colorizeName(info, filepath.Base(realCwd))})
+			}
+			return
+		}
+		// It is a directory, show its contents
 		ents, err := os.ReadDir(realCwd)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})

@@ -756,12 +756,14 @@
            const m = $current.match(/^\s*(\S+)(?:\s+(.*))?$/);
            const cmd = m ? m[1] : '';
            let arg = m && m[2] !== undefined ? m[2] : '';
+           const isLs = (cmd === 'ls' || cmd === 'dir');
            const isCd = (cmd === 'cd');
            const isCat = (cmd === 'cat');
            const isGet = (cmd === 'wget' || cmd === 'get' || cmd === 'rget' || cmd === 'download');
            const isUrl = (cmd === 'url' || cmd === 'share');
-           if (isCd || isCat || isGet || isUrl) {
+           if (isLs || isCd || isCat || isGet || isUrl) {
              const body = { path: arg || '', dirsOnly: false, filesOnly: false, maxSize: 0, textOnly: false };
+             if (isLs) { body.dirsOnly = true; }
              if (isCd) { body.dirsOnly = true; }
              if (isCat) { body.filesOnly = true; body.textOnly = true; body.maxSize = (window.CAT_MAX||0); }
              if (isGet) { body.filesOnly = true; }
