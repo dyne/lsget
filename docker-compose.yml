@@ -3,8 +3,8 @@ services:
     build: .
     container_name: lsget
     ports:
-      - "8080:8080"
+      - "4000:4000"
     volumes:
       - ./files:/data
     restart: unless-stopped
-    command: ["-dir", "/data", "-addr", "0.0.0.0:8080"]
+    command: ["-dir", "/data", "-addr", "0.0.0.0:4000"]
