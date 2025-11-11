@@ -2094,12 +2094,6 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		if req.DirsOnly && !isDir {
 			continue
 		}
-		// For filesOnly, always show directories for navigation, just filter files
-		if req.FilesOnly && !isDir {
-			// This is a file and we want filesOnly - include it
-		} else if req.FilesOnly && isDir {
-			// This is a directory - include it for navigation
-		}
 
 		if req.TextOnly || req.MaxSize > 0 {
 			if !isDir {
