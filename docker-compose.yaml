@@ -1,0 +1,20 @@
+services:
+  lsget:
+    build: .
+    container_name: lsget
+    volumes:
+      - ./files:/data
+    restart: unless-stopped
+    command: ["-dir", "/data", "-addr", "0.0.0.0:8080"]
+    environment:
+      - SERVICE_URL_LSGET_8080
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - 'http://127.0.0.1:8080'
+      interval: 2s
+      timeout: 10s
+      retries: 15
+
