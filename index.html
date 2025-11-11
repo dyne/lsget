@@ -756,18 +756,33 @@
            const m = $current.match(/^\s*(\S+)(?:\s+(.*))?$/);
            const cmd = m ? m[1] : '';
            let arg = m && m[2] !== undefined ? m[2] : '';
+           
+           // Extract the actual path argument, skipping flags (starting with -)
+           let pathArg = '';
+           if (arg) {
+             const parts = arg.split(/\s+/);
+             // Find the last non-flag argument
+             for (let i = parts.length - 1; i >= 0; i--) {
+               if (parts[i] && !parts[i].startsWith('-')) {
+                 pathArg = parts[i];
+                 break;
+               }
+             }
+           }
+           
            const isLs = (cmd === 'ls' || cmd === 'dir');
            const isCd = (cmd === 'cd');
            const isCat = (cmd === 'cat');
            const isGet = (cmd === 'wget' || cmd === 'get' || cmd === 'rget' || cmd === 'download');
            const isUrl = (cmd === 'url' || cmd === 'share');
-           if (isLs || isCd || isCat || isGet || isUrl) {
-             const body = { path: arg || '', dirsOnly: false, filesOnly: false, maxSize: 0, textOnly: false };
-             if (isLs) { body.dirsOnly = true; }
+           const isSum = (cmd === 'sum' || cmd === 'checksum');
+           if (isLs || isCd || isCat || isGet || isUrl || isSum) {
+             const body = { path: pathArg || '', dirsOnly: false, filesOnly: false, maxSize: 0, textOnly: false };
              if (isCd) { body.dirsOnly = true; }
              if (isCat) { body.filesOnly = true; body.textOnly = true; body.maxSize = (window.CAT_MAX||0); }
              if (isGet) { body.filesOnly = true; }
              if (isUrl) { body.filesOnly = true; }
+             if (isSum) { body.filesOnly = true; }
              fetch('/api/complete', {
                method: 'POST', headers: { 'Content-Type': 'application/json' },
                body: JSON.stringify(body)
@@ -775,16 +790,20 @@
              .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
              .then(({ items }) => {
                if (!Array.isArray(items) || items.length === 0) return;
-               const slash = (arg||'').lastIndexOf('/');
-               const dirPart  = slash >= 0 ? arg.slice(0, slash+1) : '';
-               const basePart = slash >= 0 ? arg.slice(slash+1) : (arg||'');
+               const slash = (pathArg||'').lastIndexOf('/');
+               const dirPart  = slash >= 0 ? pathArg.slice(0, slash+1) : '';
+               const basePart = slash >= 0 ? pathArg.slice(slash+1) : (pathArg||'');
                const names = items.map(it => it.name);
                const lcp = longestCommonPrefix(names);
+               
+               // Reconstruct command with flags
+               const flagsPart = arg && pathArg ? arg.substring(0, arg.lastIndexOf(pathArg)) : (arg && arg.trim().startsWith('-') ? arg + ' ' : '');
+               
                if (lcp && lcp !== basePart) {
-                 $current = cmd + ' ' + (dirPart + lcp);
+                 $current = cmd + ' ' + flagsPart + (dirPart + lcp);
                } else if (items.length === 1) {
                  const one = items[0];
-                 $current = cmd + ' ' + (dirPart + one.name + (one.dir ? '/' : ''));
+                 $current = cmd + ' ' + flagsPart + (dirPart + one.name + (one.dir ? '/' : ''));
                } else {
                  const list = items.map(it => it.name + (it.dir ? '/' : '')).join('  ');
                  $buffer += `<div class='line out'>${ansiToHtml(list)}</div>`;

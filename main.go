@@ -5,8 +5,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/rand"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -68,9 +71,10 @@ const helpTpl = `Welcome to <span class="ps1">lsget</span> <span style="color: #
 <span style="color: #aaa;">Available commands:</span>
 • <strong>help</strong> - <span style="color: #bbb;">print this message again</span>
 • <strong>pwd</strong> - <span style="color: #bbb;">print working directory</span>
-• <strong>ls</strong> <span style="color: #888;">[-l]</span>|<strong>dir</strong> <span style="color: #888;">[-l]</span> - <span style="color: #bbb;">list files</span>
+• <strong>ls</strong> <span style="color: #888;">[-l] [-h]</span>|<strong>dir</strong> <span style="color: #888;">[-l] [-h]</span> - <span style="color: #bbb;">list files (-h for human readable sizes)</span>
 • <strong>cd</strong> <span style="color: #888;">DIR</span> - <span style="color: #bbb;">change directory</span>
 • <strong>cat</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">view a text file</span>
+• <strong>sum</strong>|<strong>checksum</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">print MD5 and SHA256 checksums</span>
 • <strong>get</strong>|<strong>wget</strong>|<strong>download</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">download a file</span>
 • <strong>url</strong>|<strong>share</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">get shareable URL (copies to clipboard)</span>
 • <strong>tree</strong> <span style="color: #888;">[-L&lt;DEPTH&gt;] [-a]</span> - <span style="color: #bbb;">directory structure</span>
@@ -472,12 +476,35 @@ func parseArgs(line string) []string {
 	return args
 }
 
-func formatLong(info os.FileInfo, name string) string {
+func formatLong(info os.FileInfo, name string, humanReadable bool) string {
 	// mode, size, date, name (owner/group omitted for portability)
 	mode := info.Mode().String()
 	size := info.Size()
 	mod := info.ModTime().Format("Jan _2 15:04")
+	
+	if humanReadable {
+		sizeStr := formatHumanSize(size)
+		return fmt.Sprintf("%s %10s %s %s", mode, sizeStr, mod, name)
+	}
 	return fmt.Sprintf("%s %10d %s %s", mode, size, mod, name)
+}
+
+// formatHumanSize formats byte size in human-readable format
+func formatHumanSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%dB", size)
+	}
+	const unit = 1024
+	if size < unit*unit {
+		return fmt.Sprintf("%.1fK", float64(size)/unit)
+	}
+	if size < unit*unit*unit {
+		return fmt.Sprintf("%.1fM", float64(size)/(unit*unit))
+	}
+	if size < unit*unit*unit*unit {
+		return fmt.Sprintf("%.1fG", float64(size)/(unit*unit*unit))
+	}
+	return fmt.Sprintf("%.1fT", float64(size)/(unit*unit*unit*unit))
 }
 
 // text/binary heuristic: reject if contains NUL or too many non-printables;
@@ -856,6 +883,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	case "ls", "dir":
 		long := false
 		showHidden := false
+		humanReadable := false
 		target := sess.cwd
 		// Parse arguments: flags and optional path
 		for _, arg := range argv {
@@ -866,6 +894,9 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				}
 				if strings.Contains(arg, "a") {
 					showHidden = true
+				}
+				if strings.Contains(arg, "h") {
+					humanReadable = true
 				}
 			} else {
 				// First non-flag argument is the path
@@ -889,7 +920,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		if !info.IsDir() {
 			// If it's a file, show the file in the listing
 			if long {
-				_ = json.NewEncoder(w).Encode(execResp{Output: formatLong(info, colorizeName(info, filepath.Base(realCwd)))})
+				_ = json.NewEncoder(w).Encode(execResp{Output: formatLong(info, colorizeName(info, filepath.Base(realCwd)), humanReadable)})
 			} else {
 				_ = json.NewEncoder(w).Encode(execResp{Output: colorizeName(info, filepath.Base(realCwd))})
 			}
@@ -937,7 +968,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			// Format the long listing with colorized filename
-			longEntry := formatLong(info, colorizeName(info, name))
+			longEntry := formatLong(info, colorizeName(info, name), humanReadable)
 			longs = append(longs, longEntry)
 		}
 		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(longs, "\n")})
@@ -1334,6 +1365,55 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
+		return
+
+	case "sum", "checksum":
+		if len(argv) < 1 {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: missing file operand"})
+			return
+		}
+
+		vp := joinVirtual(sess.cwd, argv[0])
+		rp, err := s.realFromVirtual(vp)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: permission denied"})
+			return
+		}
+
+		info, err := os.Stat(rp)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: no such file or directory"})
+			return
+		}
+
+		if info.IsDir() {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: is a directory"})
+			return
+		}
+
+		// Open file and compute hashes
+		f, err := os.Open(rp)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: cannot open file"})
+			return
+		}
+		defer func() { _ = f.Close() }()
+
+		md5Hash := md5.New()
+		sha256Hash := sha256.New()
+		
+		// Use MultiWriter to compute both hashes in one pass
+		writer := io.MultiWriter(md5Hash, sha256Hash)
+		if _, err := io.Copy(writer, f); err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: error reading file"})
+			return
+		}
+
+		md5Sum := hex.EncodeToString(md5Hash.Sum(nil))
+		sha256Sum := hex.EncodeToString(sha256Hash.Sum(nil))
+
+		output := fmt.Sprintf("MD5:    %s\nSHA256: %s", md5Sum, sha256Sum)
+		_ = json.NewEncoder(w).Encode(execResp{Output: output})
 		return
 	}
 
@@ -2014,8 +2094,11 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		if req.DirsOnly && !isDir {
 			continue
 		}
-		if req.FilesOnly && isDir {
-			continue
+		// For filesOnly, always show directories for navigation, just filter files
+		if req.FilesOnly && !isDir {
+			// This is a file and we want filesOnly - include it
+		} else if req.FilesOnly && isDir {
+			// This is a directory - include it for navigation
 		}
 
 		if req.TextOnly || req.MaxSize > 0 {

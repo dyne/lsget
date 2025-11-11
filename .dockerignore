@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+lsget
+*.exe
+*.test
+
+# Development
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Documentation
+README.md
+LICENSE
+
+# CI/CD
+.github
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Task and development tools
+Taskfile.yml
+air.toml
+
+# Dependencies
+vendor/
+
+# Test files
+*_test.go
+
+# Temporary files
+tmp/
+mimmo/

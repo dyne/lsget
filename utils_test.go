@@ -139,7 +139,7 @@ func TestFormatLong(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(f)
-	line := formatLong(info, "name")
+	line := formatLong(info, "name", false)
 	if !strings.Contains(line, "name") || !strings.Contains(line, info.Mode().String()) {
 		t.Fatalf("formatLong: %q", line)
 	}
@@ -258,6 +258,6 @@ func TestFormatLongTimeStability(t *testing.T) {
 	}
 	info, _ := os.Stat(f)
 	_ = info.ModTime().Format("Jan _2 15:04")
-	_ = formatLong(info, "x")
+	_ = formatLong(info, "x", false)
 	_ = time.Now() // just touch time to ensure import used in test logic
 }

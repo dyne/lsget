@@ -1,0 +1,10 @@
+services:
+  lsget:
+    build: .
+    container_name: lsget
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./files:/data
+    restart: unless-stopped
+    command: ["-dir", "/data", "-addr", "0.0.0.0:8080"]
