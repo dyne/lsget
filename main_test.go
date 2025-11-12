@@ -36,7 +36,7 @@ func TestCollectFilesForDownload(t *testing.T) {
 	}
 
 	rootAbs, _ := filepath.Abs(testDir)
-	s := newServer(rootAbs, 256*1024)
+	s := newServer(rootAbs, 256*1024, "")
 
 	// Test wildcard pattern
 	files, err := s.collectFilesForDownload("/", "*.png")
@@ -84,7 +84,7 @@ func TestCollectFilesFromDirectory(t *testing.T) {
 	}
 
 	rootAbs, _ := filepath.Abs(testDir)
-	s := newServer(rootAbs, 256*1024)
+	s := newServer(rootAbs, 256*1024, "")
 
 	// Test collecting files from directory
 	files, err := s.collectFilesFromDirectory("/", rootAbs)

@@ -24,7 +24,7 @@ func makeTempDir(t *testing.T) string {
 
 func newTestServer(t *testing.T) *server {
 	root := makeTempDir(t)
-	return newServer(root, 4*1024) // small catMax for tests
+	return newServer(root, 4*1024, "") // small catMax for tests
 }
 
 func TestRenderHelp(t *testing.T) {
