@@ -4,8 +4,9 @@ services:
     container_name: lsget
     volumes:
       - ./files:/data
+      - ./logs:/logs
     restart: unless-stopped
-    command: ["-dir", "/data", "-addr", "0.0.0.0:8080"]
+    command: ["-dir", "/data", "-addr", "0.0.0.0:8080", "-logfile", "/logs/access.log"]
     environment:
       - SERVICE_URL_LSGET_8080
     healthcheck:
