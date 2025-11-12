@@ -37,6 +37,8 @@ var (
 	exitFunc       = os.Exit
 	listenAndServe = func(srv *http.Server) error { return srv.ListenAndServe() }
 	pidFile        = ""
+	logFile        = ""
+	logMutex       sync.Mutex
 )
 
 // ===== ANSI Color Codes =====
@@ -248,13 +250,15 @@ type server struct {
 	catMax   int64  // max bytes allowed for `cat`
 	sessions map[string]*session
 	mu       sync.RWMutex
+	logfile  string // path to log file for statistics
 }
 
-func newServer(rootAbs string, catMax int64) *server {
+func newServer(rootAbs string, catMax int64, logfile string) *server {
 	return &server{
 		rootAbs:  rootAbs,
 		catMax:   catMax,
 		sessions: make(map[string]*session),
+		logfile:  logfile,
 	}
 }
 
@@ -341,6 +345,28 @@ func (s *server) shouldIgnore(realPath, name string) bool {
 }
 
 // ===== Utilities =====
+
+// logCommand writes a command execution to the log file
+func logCommand(cmd, filePath, ip string) {
+	if logFile == "" {
+		return
+	}
+	
+	logMutex.Lock()
+	defer logMutex.Unlock()
+	
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	
+	timestamp := time.Now().Format("[02/Jan/2006:15:04:05 -0700]")
+	// Format: ip - - timestamp "POST /api/exec?cmd=COMMAND&file=PATH HTTP/1.1" 200 0 "-" "-"
+	logLine := fmt.Sprintf("%s - - %s \"POST /api/exec?cmd=%s&file=%s HTTP/1.1\" 200 0 \"-\" \"-\"\n",
+		ip, timestamp, cmd, urlQueryEscape(filePath))
+	_, _ = f.WriteString(logLine)
+}
 
 func newSID() string {
 	var b [16]byte
@@ -1054,6 +1080,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		pattern := argv[0]
+		
+		// Get IP address for logging
+		ip := r.RemoteAddr
+		if colon := strings.LastIndex(ip, ":"); colon != -1 {
+			ip = ip[:colon]
+		}
 
 		// Check if pattern contains wildcards or is a directory
 		if strings.ContainsAny(pattern, "*?[") || pattern == "." {
@@ -1069,11 +1101,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(files) == 1 {
 				// Single file, download directly
+				logCommand("get", files[0].virtualPath, ip)
 				url := "/api/download?path=" + urlEscapeVirtual(files[0].virtualPath)
 				_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
 				return
 			}
 			// Multiple files, create zip
+			logCommand("get", "(pattern match)", ip)
 			url := "/api/download?pattern=" + urlQueryEscape(pattern) + "&cwd=" + urlEscapeVirtual(sess.cwd)
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: url})
 			return
@@ -1104,12 +1138,14 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			dirName := filepath.Base(rp)
+			logCommand("get", vp+" (dir)", ip)
 			url := "/api/download?dir=" + urlEscapeVirtual(vp)
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading directory '%s' with %d files as %s.zip", dirName, len(files), dirName), Download: url})
 			return
 		}
 
 		// Single file download
+		logCommand("get", vp, ip)
 		url := "/api/download?path=" + urlEscapeVirtual(vp)
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
 		return
@@ -1268,6 +1304,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// Build the full URL for the file
 		fileURL := fmt.Sprintf("%s://%s/api/static%s", protocol, host, vp)
 
+		// Log the share command
+		ip := r.RemoteAddr
+		if colon := strings.LastIndex(ip, ":"); colon != -1 {
+			ip = ip[:colon]
+		}
+		logCommand(cmd, vp, ip)
+
 		// Return the URL with clipboard instruction
 		_ = json.NewEncoder(w).Encode(execResp{
 			Output:    fmt.Sprintf("Shareable URL: %s\n%sURL copied to clipboard!%s", fileURL, colorGreen, colorReset),
@@ -1412,12 +1455,360 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		md5Sum := hex.EncodeToString(md5Hash.Sum(nil))
 		sha256Sum := hex.EncodeToString(sha256Hash.Sum(nil))
 
+		// Log the checksum command
+		ip := r.RemoteAddr
+		if colon := strings.LastIndex(ip, ":"); colon != -1 {
+			ip = ip[:colon]
+		}
+		logCommand(cmd, vp, ip)
+
 		output := fmt.Sprintf("MD5:    %s\nSHA256: %s", md5Sum, sha256Sum)
+		_ = json.NewEncoder(w).Encode(execResp{Output: output})
+		return
+
+	case "stats":
+		if s.logfile == "" {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "stats: no log file configured (use -logfile flag)"})
+			return
+		}
+
+		stats, err := parseLogStats(s.logfile)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("stats: error reading log file: %v", err)})
+			return
+		}
+
+		output := renderStatsTable(stats)
 		_ = json.NewEncoder(w).Encode(execResp{Output: output})
 		return
 	}
 
 	_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("sh: %s: command not found", cmd)})
+}
+
+// logStats holds statistics about file access
+type logStats struct {
+	shares       map[string]int // file path -> count (url/share commands)
+	gets         map[string]int // file path -> count (get/wget/download commands)
+	directAccess map[string]int // file path -> count (direct /api/static/ access)
+	checksums    map[string]int // file path -> count (sum/checksum commands)
+}
+
+// parseLogStats parses the log file and returns statistics
+func parseLogStats(logFilePath string) (*logStats, error) {
+	file, err := os.Open(logFilePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	stats := &logStats{
+		shares:       make(map[string]int),
+		gets:         make(map[string]int),
+		directAccess: make(map[string]int),
+		checksums:    make(map[string]int),
+	}
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		
+		// Parse Combined Log Format
+		// Format: ip - user [timestamp] "method path proto" status size "referer" "user-agent"
+		
+		// Extract request line (between first and second quote)
+		firstQuote := strings.Index(line, "\"")
+		if firstQuote == -1 {
+			continue
+		}
+		secondQuote := strings.Index(line[firstQuote+1:], "\"")
+		if secondQuote == -1 {
+			continue
+		}
+		requestLine := line[firstQuote+1 : firstQuote+1+secondQuote]
+		
+		// Parse request line: "METHOD PATH PROTO"
+		parts := strings.Fields(requestLine)
+		if len(parts) < 2 {
+			continue
+		}
+		
+		method := parts[0]
+		urlPath := parts[1]
+		
+		// Parse status code (after the second quote)
+		afterRequest := line[firstQuote+1+secondQuote+1:]
+		statusParts := strings.Fields(afterRequest)
+		if len(statusParts) < 2 {
+			continue
+		}
+		statusCode := statusParts[0]
+		
+		// Only count successful requests (2xx status codes)
+		if !strings.HasPrefix(statusCode, "2") {
+			continue
+		}
+		
+		// Categorize the request
+		if strings.HasPrefix(urlPath, "/api/static/") && method == "GET" {
+			// Direct access via static endpoint
+			filePath := strings.TrimPrefix(urlPath, "/api/static")
+			if filePath != "" && !strings.HasPrefix(filePath, "/api/") {
+				stats.directAccess[filePath]++
+			}
+		} else if strings.HasPrefix(urlPath, "/api/download?") && method == "GET" {
+			// Download via get command
+			// Extract path parameter from query string
+			if idx := strings.Index(urlPath, "path="); idx != -1 {
+				pathParam := urlPath[idx+5:]
+				if endIdx := strings.Index(pathParam, "&"); endIdx != -1 {
+					pathParam = pathParam[:endIdx]
+				}
+				// URL decode the path
+				if decoded, err := urlDecode(pathParam); err == nil {
+					stats.gets[decoded]++
+				}
+			} else if idx := strings.Index(urlPath, "dir="); idx != -1 {
+				// Directory download
+				pathParam := urlPath[idx+4:]
+				if endIdx := strings.Index(pathParam, "&"); endIdx != -1 {
+					pathParam = pathParam[:endIdx]
+				}
+				if decoded, err := urlDecode(pathParam); err == nil {
+					stats.gets[decoded+" (dir)"]++
+				}
+			} else if idx := strings.Index(urlPath, "pattern="); idx != -1 {
+				// Pattern download
+				stats.gets["(pattern match)"]++
+			}
+		} else if strings.HasPrefix(urlPath, "/api/exec?cmd=url&file=") && method == "POST" {
+			// url/share command
+			pathParam := strings.TrimPrefix(urlPath, "/api/exec?cmd=url&file=")
+			if decoded, err := urlDecode(pathParam); err == nil {
+				stats.shares[decoded]++
+			}
+		} else if strings.HasPrefix(urlPath, "/api/exec?cmd=share&file=") && method == "POST" {
+			// share command
+			pathParam := strings.TrimPrefix(urlPath, "/api/exec?cmd=share&file=")
+			if decoded, err := urlDecode(pathParam); err == nil {
+				stats.shares[decoded]++
+			}
+		} else if strings.HasPrefix(urlPath, "/api/exec?cmd=get&file=") && method == "POST" {
+			// get command (logged separately from actual download)
+			pathParam := strings.TrimPrefix(urlPath, "/api/exec?cmd=get&file=")
+			if decoded, err := urlDecode(pathParam); err == nil {
+				stats.gets[decoded]++
+			}
+		} else if strings.HasPrefix(urlPath, "/api/exec?cmd=sum&file=") && method == "POST" {
+			// sum/checksum command
+			pathParam := strings.TrimPrefix(urlPath, "/api/exec?cmd=sum&file=")
+			if decoded, err := urlDecode(pathParam); err == nil {
+				stats.checksums[decoded]++
+			}
+		} else if strings.HasPrefix(urlPath, "/api/exec?cmd=checksum&file=") && method == "POST" {
+			// checksum command
+			pathParam := strings.TrimPrefix(urlPath, "/api/exec?cmd=checksum&file=")
+			if decoded, err := urlDecode(pathParam); err == nil {
+				stats.checksums[decoded]++
+			}
+		} else if !strings.HasPrefix(urlPath, "/api/") && method == "GET" && urlPath != "/" {
+			// Direct file access (not API, not root)
+			if !strings.HasPrefix(urlPath, "/?nojs=") {
+				stats.directAccess[urlPath]++
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return stats, nil
+}
+
+// urlDecode performs simple URL decoding for path components
+func urlDecode(s string) (string, error) {
+	s = strings.ReplaceAll(s, "%2F", "/")
+	s = strings.ReplaceAll(s, "%20", " ")
+	s = strings.ReplaceAll(s, "%23", "#")
+	s = strings.ReplaceAll(s, "%3F", "?")
+	s = strings.ReplaceAll(s, "%26", "&")
+	s = strings.ReplaceAll(s, "%2B", "+")
+	s = strings.ReplaceAll(s, "%25", "%")
+	return s, nil
+}
+
+// renderStatsTable renders statistics as an ASCII table
+func renderStatsTable(stats *logStats) string {
+	var result strings.Builder
+	
+	// Combine all unique paths and calculate downloads (gets + directAccess)
+	type pathStats struct {
+		path         string
+		shares       int
+		gets         int
+		directAccess int
+		downloads    int // gets + directAccess
+		checksums    int
+	}
+	
+	pathMap := make(map[string]*pathStats)
+	for path, count := range stats.shares {
+		if pathMap[path] == nil {
+			pathMap[path] = &pathStats{path: path}
+		}
+		pathMap[path].shares = count
+	}
+	for path, count := range stats.gets {
+		if pathMap[path] == nil {
+			pathMap[path] = &pathStats{path: path}
+		}
+		pathMap[path].gets = count
+	}
+	for path, count := range stats.directAccess {
+		if pathMap[path] == nil {
+			pathMap[path] = &pathStats{path: path}
+		}
+		pathMap[path].directAccess = count
+	}
+	for path, count := range stats.checksums {
+		if pathMap[path] == nil {
+			pathMap[path] = &pathStats{path: path}
+		}
+		pathMap[path].checksums = count
+	}
+	
+	// Calculate downloads for each path
+	for _, ps := range pathMap {
+		ps.downloads = ps.gets + ps.directAccess
+	}
+	
+	if len(pathMap) == 0 {
+		return "No statistics available"
+	}
+	
+	// Convert to slice and sort by downloads (descending)
+	pathList := make([]*pathStats, 0, len(pathMap))
+	for _, ps := range pathMap {
+		pathList = append(pathList, ps)
+	}
+	sort.Slice(pathList, func(i, j int) bool {
+		// Sort by downloads first (descending), then by path (ascending)
+		if pathList[i].downloads != pathList[j].downloads {
+			return pathList[i].downloads > pathList[j].downloads
+		}
+		return pathList[i].path < pathList[j].path
+	})
+	
+	// Calculate column widths
+	maxPathLen := 20
+	for _, ps := range pathList {
+		if len(ps.path) > maxPathLen && len(ps.path) < 50 {
+			maxPathLen = len(ps.path)
+		} else if len(ps.path) > 50 {
+			maxPathLen = 50
+		}
+	}
+	
+	// Build table header
+	result.WriteString(colorBold)
+	result.WriteString("┌─")
+	result.WriteString(strings.Repeat("─", maxPathLen))
+	result.WriteString("─┬────────┬──────┬───────────────┬───────────┬───────────┐\n")
+	
+	result.WriteString("│ ")
+	result.WriteString(fmt.Sprintf("%-*s", maxPathLen, "File/Directory"))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%-6s", "Shares"))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%-4s", "Gets"))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%-13s", "Direct Access"))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%-9s", "Downloads"))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%-9s", "Checksums"))
+	result.WriteString(" │\n")
+	
+	result.WriteString("├─")
+	result.WriteString(strings.Repeat("─", maxPathLen))
+	result.WriteString("─┼────────┼──────┼───────────────┼───────────┼───────────┤\n")
+	result.WriteString(colorReset)
+	
+	// Build table rows
+	totalShares := 0
+	totalGets := 0
+	totalDirectAccess := 0
+	totalDownloads := 0
+	totalChecksums := 0
+	
+	for _, ps := range pathList {
+		totalShares += ps.shares
+		totalGets += ps.gets
+		totalDirectAccess += ps.directAccess
+		totalDownloads += ps.downloads
+		totalChecksums += ps.checksums
+		
+		// Truncate path if too long
+		displayPath := ps.path
+		if len(displayPath) > maxPathLen {
+			displayPath = displayPath[:maxPathLen-3] + "..."
+		}
+		
+		result.WriteString("│ ")
+		result.WriteString(colorCyan)
+		result.WriteString(fmt.Sprintf("%-*s", maxPathLen, displayPath))
+		result.WriteString(colorReset)
+		result.WriteString(" │ ")
+		result.WriteString(colorYellow)
+		result.WriteString(fmt.Sprintf("%6d", ps.shares))
+		result.WriteString(colorReset)
+		result.WriteString(" │ ")
+		result.WriteString(colorGreen)
+		result.WriteString(fmt.Sprintf("%4d", ps.gets))
+		result.WriteString(colorReset)
+		result.WriteString(" │ ")
+		result.WriteString(colorMagenta)
+		result.WriteString(fmt.Sprintf("%13d", ps.directAccess))
+		result.WriteString(colorReset)
+		result.WriteString(" │ ")
+		result.WriteString(colorBold)
+		result.WriteString(colorBrightGreen)
+		result.WriteString(fmt.Sprintf("%9d", ps.downloads))
+		result.WriteString(colorReset)
+		result.WriteString(" │ ")
+		result.WriteString(colorBrightCyan)
+		result.WriteString(fmt.Sprintf("%9d", ps.checksums))
+		result.WriteString(colorReset)
+		result.WriteString(" │\n")
+	}
+	
+	// Build table footer with totals
+	result.WriteString(colorBold)
+	result.WriteString("├─")
+	result.WriteString(strings.Repeat("─", maxPathLen))
+	result.WriteString("─┼────────┼──────┼───────────────┼───────────┼───────────┤\n")
+	
+	result.WriteString("│ ")
+	result.WriteString(fmt.Sprintf("%-*s", maxPathLen, "TOTAL"))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%6d", totalShares))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%4d", totalGets))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%13d", totalDirectAccess))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%9d", totalDownloads))
+	result.WriteString(" │ ")
+	result.WriteString(fmt.Sprintf("%9d", totalChecksums))
+	result.WriteString(" │\n")
+	
+	result.WriteString("└─")
+	result.WriteString(strings.Repeat("─", maxPathLen))
+	result.WriteString("─┴────────┴──────┴───────────────┴───────────┴───────────┘")
+	result.WriteString(colorReset)
+	
+	return result.String()
 }
 
 // findFiles recursively searches for files and directories matching the given pattern
@@ -2147,6 +2538,7 @@ func main() {
 		dir          = flag.String("dir", ".", "directory to expose as root")
 		catMax       = flag.Int64("catmax", 256*1024, "max bytes printable via `cat` and used by completion")
 		pidFileFlag  = flag.String("pid", "", "path to PID file")
+		logfileFlag  = flag.String("logfile", "", "path to log file for statistics")
 	)
 	flag.Parse()
 
@@ -2173,7 +2565,12 @@ func main() {
 		exitFunc(1)
 	}
 
-	s := newServer(rootAbs, *catMax)
+	// Set global log file path
+	if *logfileFlag != "" {
+		logFile = *logfileFlag
+	}
+
+	s := newServer(rootAbs, *catMax, *logfileFlag)
 
 	// Create PID file if specified
 	if *pidFileFlag != "" {
@@ -2296,7 +2693,20 @@ func logRequests(next http.Handler) http.Handler {
 			sizeStr = fmt.Sprintf("%d", responseSize)
 		}
 
-		fmt.Printf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"\n",
+		logLine := fmt.Sprintf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"\n",
 			ip, "-", user, timestamp, requestLine, statusCode, sizeStr, referer, userAgent)
+		
+		fmt.Print(logLine)
+		
+		// Write to log file if specified
+		if logFile != "" {
+			logMutex.Lock()
+			f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err == nil {
+				_, _ = f.WriteString(logLine)
+				_ = f.Close()
+			}
+			logMutex.Unlock()
+		}
 	})
 }
