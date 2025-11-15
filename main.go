@@ -155,6 +155,10 @@ func getFileColor(info os.FileInfo, name string) string {
 // colorizeName wraps a filename with appropriate ANSI color codes
 func colorizeName(info os.FileInfo, name string) string {
 	color := getFileColor(info, name)
+	// Add trailing / for directories (Unix style)
+	if info.IsDir() {
+		return color + name + "/" + colorReset
+	}
 	return color + name + colorReset
 }
 
