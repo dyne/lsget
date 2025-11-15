@@ -2,6 +2,9 @@
 
 ## Build/Test/Lint Commands
 ```bash
+# Download vendored JavaScript assets (first time or to update)
+cd static && ./download-assets.sh && cd ..
+
 # Build
 go build .
 
@@ -32,4 +35,5 @@ go test -run TestName  # run single test
 - **Constants**: Define color codes and config as const blocks
 - **HTTP**: Use standard `net/http` with `http.ServeMux`
 - **File Structure**: Single `main.go` for simplicity
-- **Embedded Assets**: Use `//go:embed` for index.html fallback
+- **Embedded Assets**: Use `//go:embed` for index.html and static JS dependencies
+- **Privacy**: All JavaScript assets vendored in `static/` (no CDN dependencies)
