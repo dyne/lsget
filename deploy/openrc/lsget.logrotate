@@ -1,0 +1,28 @@
+# Logrotate configuration for lsget
+# Install to: /etc/logrotate.d/lsget
+
+/var/log/lsget/*.log /var/log/lsget/*.out /var/log/lsget/*.err {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 lsget lsget
+    sharedscripts
+    postrotate
+        # Reload main service if running
+        if rc-service lsget status >/dev/null 2>&1; then
+            rc-service lsget reload >/dev/null 2>&1 || true
+        fi
+        # Reload any instance services
+        for service in /etc/init.d/lsget.*; do
+            if [ -L "$service" ] || [ -f "$service" ]; then
+                service_name=$(basename "$service")
+                if rc-service "$service_name" status >/dev/null 2>&1; then
+                    rc-service "$service_name" reload >/dev/null 2>&1 || true
+                fi
+            fi
+        done
+    endscript
+}

@@ -1,0 +1,18 @@
+# Logrotate configuration for lsget
+# Install to: /etc/logrotate.d/lsget
+
+/var/log/lsget/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 lsget lsget
+    sharedscripts
+    postrotate
+        systemctl reload lsget.service > /dev/null 2>&1 || true
+        # Also reload any templated instances
+        systemctl list-units --type=service --state=running 'lsget@*.service' --plain --no-legend | awk '{print $1}' | xargs -r -n1 systemctl reload 2>/dev/null || true
+    endscript
+}

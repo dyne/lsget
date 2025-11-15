@@ -1,0 +1,21 @@
+# Default configuration for lsget service
+# Install to: /etc/default/lsget (Debian/Ubuntu) or /etc/sysconfig/lsget (RHEL/Fedora)
+# This file is sourced by the systemd service unit
+
+# Listen address (IP:PORT)
+LSGET_ADDR="127.0.0.1:8037"
+
+# Root directory to serve
+# Default: /srv/ftp
+# Note: This directory must be readable by the lsget user
+LSGET_DIR="/srv/ftp"
+
+# Maximum bytes printable via 'cat' command and used by completion
+# Default: 4 KiB
+LSGET_CATMAX="4092"
+
+# PID file location
+LSGET_PIDFILE="/var/lib/lsget/lsget.pid"
+
+# Log file location (for statistics tracking)
+LSGET_LOGFILE="/var/log/lsget/access.log"
