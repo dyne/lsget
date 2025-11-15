@@ -1,0 +1,46 @@
+[Unit]
+Description=lsget - Web-based terminal file server (%i)
+Documentation=https://github.com/dyne/lsget
+After=network.target
+
+[Service]
+Type=simple
+User=lsget
+Group=lsget
+EnvironmentFile=-/etc/default/lsget-%i
+ExecStart=/usr/local/bin/lsget \
+  -addr ${LSGET_ADDR} \
+  -dir ${LSGET_DIR} \
+  -catmax ${LSGET_CATMAX} \
+  -pid ${LSGET_PIDFILE} \
+  -logfile ${LSGET_LOGFILE}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lsget /var/log/lsget
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+PrivateMounts=true
+
+# Working directory
+WorkingDirectory=/var/lib/lsget
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=512
+
+[Install]
+WantedBy=multi-user.target

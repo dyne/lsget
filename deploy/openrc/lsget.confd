@@ -1,0 +1,22 @@
+# Configuration for lsget service
+# /etc/conf.d/lsget
+
+# Listen address (IP:PORT)
+# Default: 127.0.0.1:8037
+LSGET_ADDR="127.0.0.1:8037"
+
+# Root directory to serve
+# Default: /srv/ftp
+# Note: This directory must be readable by the lsget user
+LSGET_DIR="/srv/ftp"
+
+# Maximum bytes printable via 'cat' command and used by completion
+# Default: 262144 (256 KiB)
+LSGET_CATMAX="262144"
+
+# Log file location (for statistics tracking)
+# Default: /var/log/lsget/lsget.log
+LSGET_LOGFILE="/var/log/lsget/lsget.log"
+
+# Additional command line options (optional)
+# LSGET_OPTS=""
