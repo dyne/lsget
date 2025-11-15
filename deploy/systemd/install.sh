@@ -43,14 +43,26 @@ mkdir -p /etc/default
 chown lsget:lsget /var/lib/lsget
 chown lsget:lsget /var/log/lsget
 
-# Install default configuration if it doesn't exist
-if [ ! -f "/etc/default/lsget" ]; then
-  echo "Installing default configuration..."
-  cp lsget /etc/default/lsget
-  echo -e "${YELLOW}Note: Please edit /etc/default/lsget to configure your settings${NC}"
+# Determine config directory (Debian style vs RHEL style)
+if [ -d "/etc/default" ]; then
+  CONFIG_DIR="/etc/default"
+elif [ -d "/etc/sysconfig" ]; then
+  CONFIG_DIR="/etc/sysconfig"
 else
-  echo -e "${YELLOW}Configuration file /etc/default/lsget already exists, skipping...${NC}"
-  echo "To update, manually copy: cp lsget /etc/default/lsget"
+  # Create /etc/default if neither exists
+  mkdir -p /etc/default
+  CONFIG_DIR="/etc/default"
+fi
+
+# Install default configuration if it doesn't exist
+if [ ! -f "${CONFIG_DIR}/lsget" ]; then
+  echo "Installing default configuration to ${CONFIG_DIR}/lsget..."
+  cp lsget.default ${CONFIG_DIR}/lsget
+  chmod 644 ${CONFIG_DIR}/lsget
+  echo -e "${YELLOW}Note: Please edit ${CONFIG_DIR}/lsget to configure your settings${NC}"
+else
+  echo -e "${YELLOW}Configuration file ${CONFIG_DIR}/lsget already exists, skipping...${NC}"
+  echo "To update, manually copy: cp lsget.default ${CONFIG_DIR}/lsget"
 fi
 
 # Install systemd service files
@@ -70,13 +82,13 @@ systemctl daemon-reload
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
 echo "Next steps:"
-echo "  1. Edit configuration: sudo nano /etc/default/lsget"
+echo "  1. Edit configuration: sudo nano ${CONFIG_DIR}/lsget"
 echo "  2. Enable service: sudo systemctl enable lsget.service"
 echo "  3. Start service: sudo systemctl start lsget.service"
 echo "  4. Check status: sudo systemctl status lsget.service"
 echo ""
 echo "For multiple instances:"
-echo "  1. Create config: sudo cp /etc/default/lsget /etc/default/lsget-instance1"
-echo "  2. Edit config: sudo nano /etc/default/lsget-instance1"
+echo "  1. Create config: sudo cp ${CONFIG_DIR}/lsget ${CONFIG_DIR}/lsget-instance1"
+echo "  2. Edit config: sudo nano ${CONFIG_DIR}/lsget-instance1"
 echo "  3. Enable instance: sudo systemctl enable lsget@instance1.service"
 echo "  4. Start instance: sudo systemctl start lsget@instance1.service"

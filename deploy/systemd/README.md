@@ -6,7 +6,8 @@ This directory contains systemd service files and installation scripts for deplo
 
 - **lsget.service** - Main systemd service unit file for single instance
 - **lsget@.service** - Template systemd service unit file for multiple instances
-- **lsget** - Default configuration file (`/etc/default/lsget`)
+- **lsget.default** - Default configuration file (installs to `/etc/default/lsget`)
+- **lsget.logrotate** - Logrotate configuration (installs to `/etc/logrotate.d/lsget`)
 - **install.sh** - Installation script
 - **uninstall.sh** - Uninstallation script
 
@@ -54,7 +55,7 @@ sudo mkdir -p /var/lib/lsget /var/log/lsget /etc/default
 sudo chown lsget:lsget /var/lib/lsget /var/log/lsget
 
 # Copy files
-sudo cp lsget /etc/default/lsget
+sudo cp lsget.default /etc/default/lsget
 sudo cp lsget.service /etc/systemd/system/
 sudo cp lsget@.service /etc/systemd/system/
 
@@ -71,8 +72,14 @@ sudo systemctl daemon-reload
 Edit the configuration file to customize settings:
 
 ```bash
+# Debian/Ubuntu style
 sudo nano /etc/default/lsget
+
+# Or RHEL/Fedora style
+sudo nano /etc/sysconfig/lsget
 ```
+
+**Note**: The service automatically looks for configuration in both `/etc/default/lsget` (Debian/Ubuntu style) and `/etc/sysconfig/lsget` (RHEL/Fedora style). The install script creates the file in the appropriate location for your system.
 
 ### Configuration Options
 

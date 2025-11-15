@@ -194,7 +194,7 @@ deploy/
 │   ├── README.md            # systemd-specific documentation
 │   ├── install.sh           # Installation script
 │   ├── uninstall.sh         # Uninstallation script
-│   ├── lsget                # Default configuration
+│   ├── lsget.default        # Default configuration
 │   ├── lsget.service        # Service unit file
 │   ├── lsget@.service       # Template unit file
 │   └── lsget.logrotate      # Logrotate configuration

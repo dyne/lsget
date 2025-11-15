@@ -8,6 +8,7 @@ Type=simple
 User=lsget
 Group=lsget
 EnvironmentFile=-/etc/default/lsget
+EnvironmentFile=-/etc/sysconfig/lsget
 ExecStart=/usr/local/bin/lsget \
   -addr ${LSGET_ADDR} \
   -dir ${LSGET_DIR} \
