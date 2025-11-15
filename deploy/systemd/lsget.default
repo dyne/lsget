@@ -11,8 +11,8 @@ LSGET_ADDR="127.0.0.1:8037"
 LSGET_DIR="/srv/ftp"
 
 # Maximum bytes printable via 'cat' command and used by completion
-# Default: 262144 (256 KiB)
-LSGET_CATMAX="262144"
+# Default: 4 KiB
+LSGET_CATMAX="4092"
 
 # PID file location
 LSGET_PIDFILE="/var/lib/lsget/lsget.pid"
