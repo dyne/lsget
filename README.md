@@ -29,7 +29,6 @@ For hackers: hot‑reload your server with [Air](https://github.com/cosmtrek/air
 | Smart autocompletion | Tab‑completes dirs/files (text‑only, size‑limited for `cat`). |
 | Colourised `ls`      | Directories in bright blue (Ubuntu style) with trailing `/`. |
 | Session isolation    | Per‑browser *in‑memory* CWD tracked via cookie. |
-| Privacy‑first        | All assets self‑hosted, **zero CDN dependencies**, no external requests. |
 | Live reload          | `task dev` ⇒ [Air](https://github.com/cosmtrek/air) rebuilds `main.go` on save. |
 | Zero‑config binary   | `go run .` or `go build` produces a single executable. |
 
@@ -61,24 +60,6 @@ Single binary, no need to install anything!
 curl -fsSL  "https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname -s)-$(uname -m)" -o lsget && chmod +x lsget
 ```
 
-### Build from source
-
-```bash
-# Clone repository
-git clone https://github.com/dyne/lsget.git
-cd lsget
-
-# Download vendored JavaScript dependencies (privacy-friendly, no CDN)
-cd static && ./download-assets.sh && cd ..
-
-# Build
-go build .
-
-# Run
-./lsget
-```
-
-**Note**: The JavaScript dependencies (marked.js and datastar.js) are embedded in the binary for privacy. No external CDN requests are made.
 
 **[🔝 back to top](#toc)**
 
