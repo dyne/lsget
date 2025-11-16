@@ -361,6 +361,26 @@ func (s *server) shouldIgnore(realPath, name string) bool {
 
 // ===== Utilities =====
 
+// getClientIP extracts the real client IP, checking X-Forwarded-For first
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header (for reverse proxies)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// X-Forwarded-For can contain multiple IPs: "client, proxy1, proxy2"
+		// The first one is the original client
+		if comma := strings.Index(xff, ","); comma > 0 {
+			return strings.TrimSpace(xff[:comma])
+		}
+		return strings.TrimSpace(xff)
+	}
+
+	// Fallback to RemoteAddr
+	ip := r.RemoteAddr
+	if colon := strings.LastIndex(ip, ":"); colon != -1 {
+		return ip[:colon]
+	}
+	return ip
+}
+
 // logCommand writes a command execution to the log file
 func logCommand(cmd, filePath, ip string) {
 	if logFile == "" {
@@ -1112,12 +1132,9 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		pattern := argv[0]
-		
+
 		// Get IP address for logging
-		ip := r.RemoteAddr
-		if colon := strings.LastIndex(ip, ":"); colon != -1 {
-			ip = ip[:colon]
-		}
+		ip := getClientIP(r)
 
 		// Check if pattern contains wildcards or is a directory
 		if strings.ContainsAny(pattern, "*?[") || pattern == "." {
@@ -1337,11 +1354,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		fileURL := fmt.Sprintf("%s://%s/api/static%s", protocol, host, vp)
 
 		// Log the share command
-		ip := r.RemoteAddr
-		if colon := strings.LastIndex(ip, ":"); colon != -1 {
-			ip = ip[:colon]
-		}
-		logCommand(cmd, vp, ip)
+		logCommand(cmd, vp, getClientIP(r))
 
 		// Return the URL with clipboard instruction
 		_ = json.NewEncoder(w).Encode(execResp{
@@ -1488,11 +1501,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		sha256Sum := hex.EncodeToString(sha256Hash.Sum(nil))
 
 		// Log the checksum command
-		ip := r.RemoteAddr
-		if colon := strings.LastIndex(ip, ":"); colon != -1 {
-			ip = ip[:colon]
-		}
-		logCommand(cmd, vp, ip)
+		logCommand(cmd, vp, getClientIP(r))
 
 		output := fmt.Sprintf("MD5:    %s\nSHA256: %s", md5Sum, sha256Sum)
 		_ = json.NewEncoder(w).Encode(execResp{Output: output})
@@ -2690,10 +2699,7 @@ func logRequests(next http.Handler) http.Handler {
 		next.ServeHTTP(rl, r)
 
 		// Get remote IP address
-		ip := r.RemoteAddr
-		if colon := strings.LastIndex(ip, ":"); colon != -1 {
-			ip = ip[:colon]
-		}
+		ip := getClientIP(r)
 
 		// Get user identifier (using "-" as we don't have user auth)
 		user := "-"
