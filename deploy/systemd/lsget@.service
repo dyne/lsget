@@ -14,7 +14,9 @@ ExecStart=/usr/local/bin/lsget \
   -dir ${LSGET_DIR} \
   -catmax ${LSGET_CATMAX} \
   -pid ${LSGET_PIDFILE} \
-  -logfile ${LSGET_LOGFILE}
+  -logfile ${LSGET_LOGFILE} \
+  -baseurl ${LSGET_BASEURL} \
+  -sitemap ${LSGET_SITEMAP}
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s

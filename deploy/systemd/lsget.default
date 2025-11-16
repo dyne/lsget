@@ -19,3 +19,11 @@ LSGET_PIDFILE="/var/lib/lsget/lsget.pid"
 
 # Log file location (for statistics tracking)
 LSGET_LOGFILE="/var/log/lsget/access.log"
+
+# Base URL for the site (e.g., https://files.example.com)
+# Used for sitemap generation and url/share commands
+LSGET_BASEURL=""
+
+# Sitemap generation interval in minutes (0 = disabled)
+# Generates sitemap.xml periodically for SEO
+LSGET_SITEMAP="0"

@@ -461,11 +461,7 @@ func (s *server) generateSitemap() error {
 			return nil
 		}
 
-		if info.IsDir() {
-			urls = append(urls, s.baseURL+vp)
-		} else {
-			urls = append(urls, s.baseURL+"/api/static"+vp)
-		}
+    urls = append(urls, s.baseURL+vp)
 
 		return nil
 	})
@@ -1292,7 +1288,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		// Display images inline
 		if category == FileCategoryImage {
-			url := "/api/static" + urlEscapeVirtual(vp)
+			url := urlEscapeVirtual(vp)
 			name := filepath.Base(argv[0])
 			imgHTML := fmt.Sprintf(
 				`<div style="margin: 0.5em 0;">`+
