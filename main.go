@@ -1302,8 +1302,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Only text files can be displayed as text
-		if category != FileCategoryText {
+		// Only text files and unknown files (to be checked by content) can be displayed
+		if category != FileCategoryText && category != FileCategoryUnknown {
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("cat: cannot display %s files (use 'get' to download)", category)})
 			return
 		}

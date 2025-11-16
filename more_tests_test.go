@@ -154,7 +154,7 @@ func TestLooksText_Heuristics(t *testing.T) {
 func TestHandleStaticFile_NotFound(t *testing.T) {
 	s := newTestServer(t)
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/api/static/missing.js", nil)
+	r := httptest.NewRequest("GET", "/missing.js", nil)
 	s.handleStaticFile(w, r)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expect 404, got %d", w.Code)
