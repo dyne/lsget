@@ -61,6 +61,26 @@
         return result;
       };
 
+      // Make filenames and directories clickable
+      window.makeClickable = function (html) {
+        return html.replace(
+          /<span style="[^"]*color: #[0-9a-f]{6}[^"]*">(?:<span[^>]*>)?([^<]+?)(?:<\/span>)?<\/span>/gi,
+          function (match, filename) {
+            if (match.includes('clickable-file')) return match;
+
+            const name = filename.trim();
+            if (!name) return match;
+
+            const isDir = name.endsWith('/');
+            const cleanName = isDir ? name.slice(0, -1) : name;
+            const cmd = isDir ? 'cd' : 'cat';
+            const escaped = cleanName.replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+
+            return match.replace(/^<span/, `<span class="clickable-file" data-cmd="${cmd}" data-file="${escaped}"`);
+          }
+        );
+      };
+
       // Safe HTML escaping for any server/user text we inject via innerHTML (fallback)
       window.escapeHTML = function (s) {
         return String(s).replace(/[&<>"']/g, function (m) {
@@ -140,6 +160,44 @@
 
         return html;
       };
+
+      // Click handler for file/directory navigation
+      document.addEventListener('DOMContentLoaded', function() {
+        const executeCommand = (command) => {
+          const ghost = document.getElementById('ghost');
+          if (!ghost) return;
+
+          ghost.value = command;
+          ghost.dispatchEvent(new Event('input', { bubbles: true }));
+          ghost.value = '';
+          ghost.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true
+          }));
+        };
+
+        document.addEventListener('click', function(evt) {
+          let target = evt.target;
+          while (target && target !== document) {
+            if (target.classList && target.classList.contains('clickable-file')) {
+              const cmd = target.getAttribute('data-cmd');
+              const file = target.getAttribute('data-file');
+
+              if (cmd && file) {
+                if (cmd === 'cd') {
+                  executeCommand('cd ' + file);
+                  setTimeout(() => executeCommand('ls'), 200);
+                } else {
+                  executeCommand(cmd + ' ' + file);
+                }
+                evt.preventDefault();
+                evt.stopPropagation();
+                return;
+              }
+            }
+            target = target.parentElement;
+          }
+        });
+      });
 
       // Config pulled from server (cat size limit)
       window.CAT_MAX = 262144; // default, will be overwritten by /api/config
@@ -593,6 +651,15 @@
         opacity: 0.85;
         line-height: 1.18;
       }
+      /* Clickable files/directories */
+      .clickable-file {
+        cursor: pointer;
+        transition: opacity 0.15s ease;
+      }
+      .clickable-file:hover {
+        opacity: 1;
+        text-shadow: 0 0 8px currentColor;
+      }
       .cursor {
         display: inline-block;
         width: 0.6em;
@@ -638,10 +705,10 @@
           $cwd = initialPath;
           $ps1 = `guest@browser:${initialPath}$ `;
         }
-        
+
         // Update browser history state
         window.history.replaceState({ cwd: $cwd }, '', $cwd === '/' ? '/' : $cwd);
-        
+
         // Handle browser back/forward buttons
         window.addEventListener('popstate', (e) => {
           if (e.state && e.state.cwd) {
@@ -663,7 +730,7 @@
         class="terminal"
         data-on-load="
             el.querySelector('#ghost').focus();
-            
+
             // Fetch initial config with path from URL
             const pathFromURL = window.location.pathname;
             fetch('/api/config' + (pathFromURL !== '/' ? '?path=' + encodeURIComponent(pathFromURL) : ''))
@@ -678,8 +745,19 @@
                     $readme = renderDocument(res.readme, res.docType || 'markdown');
                   }
                 }
+
+                // Show directory contents on load
+                setTimeout(() => {
+                  const ghost = document.getElementById('ghost');
+                  if (ghost) {
+                    ghost.value = 'ls';
+                    ghost.dispatchEvent(new Event('input', { bubbles: true }));
+                    ghost.value = '';
+                    ghost.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                  }
+                }, 100);
               });
-            
+
             const init = window.INIT_README || '';
             $readme = init ? renderDocument(init, window.DOC_TYPE) : '';
             window.addEventListener('initreadme', (e) => {
@@ -717,7 +795,7 @@
              .then((res) => {
                const { output, download, cwd, clipboard, html } = res || {};
              if (typeof output === 'string' && output.length) {
-               $buffer += `<div class='line out'>${ansiToHtml(output)}</div>`;
+               $buffer += `<div class='line out'>${makeClickable(ansiToHtml(output))}</div>`;
              }
              if (html) {
                $buffer += `<div class='line out'>${html}</div>`;
@@ -756,7 +834,7 @@
            const m = $current.match(/^\s*(\S+)(?:\s+(.*))?$/);
            const cmd = m ? m[1] : '';
            let arg = m && m[2] !== undefined ? m[2] : '';
-           
+
            // Extract the actual path argument, skipping flags (starting with -)
            let pathArg = '';
            if (arg) {
@@ -769,7 +847,7 @@
                }
              }
            }
-           
+
            const isLs = (cmd === 'ls' || cmd === 'dir');
            const isCd = (cmd === 'cd');
            const isCat = (cmd === 'cat');
@@ -795,10 +873,10 @@
                const basePart = slash >= 0 ? pathArg.slice(slash+1) : (pathArg||'');
                const names = items.map(it => it.name);
                const lcp = longestCommonPrefix(names);
-               
+
                // Reconstruct command with flags
                const flagsPart = arg && pathArg ? arg.substring(0, arg.lastIndexOf(pathArg)) : (arg && arg.trim().startsWith('-') ? arg + ' ' : '');
-               
+
                if (lcp && lcp !== basePart) {
                  $current = cmd + ' ' + flagsPart + (dirPart + lcp);
                } else if (items.length === 1) {
@@ -806,7 +884,7 @@
                  $current = cmd + ' ' + flagsPart + (dirPart + one.name + (one.dir ? '/' : ''));
                } else {
                  const list = items.map(it => it.name + (it.dir ? '/' : '')).join('  ');
-                 $buffer += `<div class='line out'>${ansiToHtml(list)}</div>`;
+                 $buffer += `<div class='line out'>${makeClickable(ansiToHtml(list))}</div>`;
                  const sc = el.querySelector('.screen'); requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
                }
              })
