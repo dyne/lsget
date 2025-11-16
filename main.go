@@ -162,6 +162,17 @@ func colorizeName(info os.FileInfo, name string) string {
 	return color + name + colorReset
 }
 
+// isImageFile checks if filename has a browser-supported image extension
+func isImageFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico":
+		return true
+	default:
+		return false
+	}
+}
+
 // readDocFile returns the raw contents of documentation files if present in dir.
 // Supports README.md, .txt, .nfo, and .rst files in priority order.
 func readDocFile(dir string) (string, string) {
@@ -1053,6 +1064,23 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: is a directory"})
 			return
 		}
+
+		// Display images inline
+		if isImageFile(argv[0]) {
+			url := "/api/static" + urlEscapeVirtual(vp)
+			name := filepath.Base(argv[0])
+			imgHTML := fmt.Sprintf(
+				`<div style="margin: 0.5em 0;">`+
+					`<a href="%s" target="_blank" style="display: inline-block; text-decoration: none;">`+
+					`<img src="%s" style="max-width: 100%%; height: auto; display: block; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);" alt="%s">`+
+					`</a>`+
+					`<div style="color: #a6d189; font-size: 0.85em; margin-top: 0.25em;">📷 %s (%s)</div>`+
+					`</div>`,
+				url, url, name, name, formatHumanSize(info.Size()))
+			_ = json.NewEncoder(w).Encode(execResp{HTML: imgHTML})
+			return
+		}
+
 		if info.Size() > s.catMax {
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("cat: file too large (%d > limit %d)", info.Size(), s.catMax)})
 			return
