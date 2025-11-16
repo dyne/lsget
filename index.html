@@ -663,6 +663,8 @@
       .cursor {
         display: inline-block;
         width: 0.6em;
+        background: var(--ctp-frappe-text);
+        color: var(--ctp-frappe-base);
       }
       .terminal:focus-within .cursor {
         animation: blink 1s steps(1, end) infinite;
@@ -697,7 +699,7 @@
   <body>
     <div
       class="layout"
-      data-signals='{ "ps1": "guest@browser:/$ ", "cwd": "/", "current": "", "buffer": "{{HELP_MESSAGE}}", "history": [], "histIndex": 0, "readme": "", "showReadme": false }'
+      data-signals='{ "ps1": "guest@browser:/$ ", "cwd": "/", "current": "", "cursorPos": 0, "buffer": "{{HELP_MESSAGE}}", "history": [], "histIndex": 0, "readme": "", "showReadme": false }'
       data-on-load="
         // Initialize path from URL
         const initialPath = '{{INITIAL_PATH}}';
@@ -784,6 +786,7 @@
            if (cmd) { $history.push(cmd); }
            $histIndex = $history.length;
            $current = '';
+           $cursorPos = 0;
            const sc = el.querySelector('.screen');
            requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
 
@@ -828,7 +831,10 @@
 
            evt.preventDefault();
          } else if (k==='Backspace') {
-           if ($current.length) { $current = $current.slice(0,-1); }
+           if ($cursorPos > 0) {
+             $current = $current.slice(0, $cursorPos - 1) + $current.slice($cursorPos);
+             $cursorPos--;
+           }
            evt.preventDefault();
          } else if (k==='Tab') {
            const m = $current.match(/^\s*(\S+)(?:\s+(.*))?$/);
@@ -894,11 +900,76 @@
              $current += '    ';
              evt.preventDefault();
            }
+         } else if (k==='ArrowLeft' && evt.ctrlKey) {
+           // Ctrl-Left: Move cursor one word left
+           const before = $current.slice(0, $cursorPos);
+           const match = before.match(/\S*\s*$/);
+           if (match) {
+             $cursorPos = Math.max(0, $cursorPos - match[0].length);
+           }
+           evt.preventDefault();
+         } else if (k==='ArrowRight' && evt.ctrlKey) {
+           // Ctrl-Right: Move cursor one word right
+           const after = $current.slice($cursorPos);
+           const match = after.match(/^\s*\S*/);
+           if (match) {
+             $cursorPos = Math.min($current.length, $cursorPos + match[0].length);
+           }
+           evt.preventDefault();
+         } else if (k==='ArrowLeft') {
+           // Move cursor left
+           if ($cursorPos > 0) {
+             $cursorPos--;
+           }
+           evt.preventDefault();
+         } else if (k==='ArrowRight') {
+           // Move cursor right
+           if ($cursorPos < $current.length) {
+             $cursorPos++;
+           }
+           evt.preventDefault();
          } else if (k==='ArrowUp') {
-           if ($histIndex>0) { $histIndex--; $current = $history[$histIndex] ?? ''; }
+           if ($histIndex>0) { 
+             $histIndex--; 
+             $current = $history[$histIndex] ?? ''; 
+             $cursorPos = $current.length;
+           }
            evt.preventDefault();
          } else if (k==='ArrowDown') {
-           if ($histIndex < $history.length) { $histIndex++; $current = $history[$histIndex] ?? ''; }
+           if ($histIndex < $history.length) { 
+             $histIndex++; 
+             $current = $history[$histIndex] ?? ''; 
+             $cursorPos = $current.length;
+           }
+           evt.preventDefault();
+         } else if (k==='u' && evt.ctrlKey) {
+           // Ctrl-U: Clear the current line (Unix shell behavior)
+           $current = '';
+           $cursorPos = 0;
+           evt.preventDefault();
+         } else if (k==='w' && evt.ctrlKey) {
+           // Ctrl-W: Delete word backwards (Unix shell behavior)
+           const before = $current.slice(0, $cursorPos);
+           const after = $current.slice($cursorPos);
+           const newBefore = before.replace(/\S*\s*$/, '');
+           $current = newBefore + after;
+           $cursorPos = newBefore.length;
+           evt.preventDefault();
+         } else if (k==='k' && evt.ctrlKey) {
+           // Ctrl-K: Delete from cursor to end of line (Unix shell behavior)
+           $current = $current.slice(0, $cursorPos);
+           evt.preventDefault();
+         } else if (k==='l' && evt.ctrlKey) {
+           // Ctrl-L: Clear screen (Unix shell behavior)
+           $buffer = '';
+           evt.preventDefault();
+         } else if (k==='a' && evt.ctrlKey) {
+           // Ctrl-A: Move cursor to beginning of line
+           $cursorPos = 0;
+           evt.preventDefault();
+         } else if (k==='e' && evt.ctrlKey) {
+           // Ctrl-E: Move cursor to end of line  
+           $cursorPos = $current.length;
            evt.preventDefault();
          }
        "
@@ -913,14 +984,29 @@
           spellcheck="false"
           autofocus
           aria-label="Hidden terminal input"
-          data-on-input="$current += evt.target.value; evt.target.value='';"
+          data-on-input="
+            const val = evt.target.value;
+            if (val && val.charCodeAt(0) > 31) {
+              $current = $current.slice(0, $cursorPos) + val + $current.slice($cursorPos);
+              $cursorPos += val.length;
+            }
+            evt.target.value = '';
+          "
         />
 
         <pre
           id="screen"
           class="screen"
           data-ref-screen
-          data-effect="el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${$ps1}</span><span class='input'></span><span class='cursor'>█</span></div>`; el.querySelector('.input').textContent = $current;"
+          data-effect="
+            const before = $current.slice(0, $cursorPos);
+            const cursorChar = $current[$cursorPos] || ' ';
+            const after = $current.slice($cursorPos + 1);
+            el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${$ps1}</span><span class='input-before'></span><span class='cursor'></span><span class='input-after'></span></div>`;
+            el.querySelector('.input-before').textContent = before;
+            el.querySelector('.cursor').textContent = cursorChar;
+            el.querySelector('.input-after').textContent = after;
+          "
         ></pre>
       </div>
       <div
