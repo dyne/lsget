@@ -2,7 +2,7 @@
 
 # lsget
 
-### A lightweight CDN UI: Self-hosted file server with a full‑screen, neon‑themed TUI in your browser.
+## Neon terminal file explorer in your browser. Read-only FTP, UNIX style interface
 
 </div>
 
@@ -39,8 +39,9 @@ Perfect for:
 | Zero‑config binary   | `go run .` or `go build` produces a single executable with embedded assets. |
 
 ![Screenshot](./screenshot.png)
+<img width="1700" height="918" alt="image" src="https://github.com/user-attachments/assets/0a4a5fce-6d09-4ef3-9211-d66d0244748d" />
 
-# [LIVE DEMO](https://files.dyne.org)
+## [LIVE DEMO](https://files.dyne.org)
 
 <br>
 
@@ -77,25 +78,49 @@ To start using lsget run the following commands
 
 ```bash
 # Download and run
-curl -fsSL  "https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname -s)-$(uname -m)" -o lsget && chmod +x lsget
 ./lsget
 ```
 Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 
 ### Configuration flags
-
-| Flag        | Default            | Description |
-|-------------|--------------------|-------------|
-| `-addr`     | `localhost:8080`   | HTTP listen address. |
-| `-dir`      | `.` (cwd)          | Directory to expose as `/`. |
-| `-catmax`   | `262144` (256 KiB) | Max bytes printable via `cat` & completion filter. |
-| `-pid`      | `` (none)          | Path to PID file. |
-| `-logfile`  | `` (none)          | Path to log file for access statistics. |
+```
+./lsget -h
+Usage of ./lsget:
+  -addr string
+        address to listen on (default "localhost:8080")
+  -baseurl string
+        base URL for the site (e.g., https://files.example.com)
+  -catmax cat
+        max bytes printable via cat and used by completion (default 4096)
+  -dir string
+        directory to expose as root (default ".")
+  -logfile string
+        path to log file for statistics
+  -pid string
+        path to PID file
+  -sitemap int
+        generate sitemap.xml every N minutes (0 = disabled)
+  -version
+        Print the version of this software and exits
+```
 
 ### Available Commands
 
 Once you open lsget in your browser, you can use the following Unix-like commands in the TUI:
-
+```
+Available commands:
+• help - print this message again
+• pwd - print working directory
+• ls [-l] [-h]|dir [-l] [-h] - list files (-h for human readable sizes)
+• cd DIR - change directory
+• cat FILE - view a text file
+• sum|checksum FILE - print MD5 and SHA256 checksums
+• get|wget|download FILE - download a file
+• url|share FILE - get shareable URL (copies to clipboard)
+• tree [-L<DEPTH>] [-a] - directory structure
+• find [PATH] [-name PATTERN] [-type f|d] - search for files and directories
+• grep [-r] [-i] [-n] PATTERN [FILE...] - search for text patterns in files
+```
 #### Navigation & File Listing
 
 | Command | Aliases | Usage | Description |
@@ -163,7 +188,7 @@ Once you open lsget in your browser, you can use the following Unix-like command
 
 Copyleft 🄯 2025 by [Dyne.org](https://www.dyne.org) foundation, Amsterdam
 
-Designed, written and maintained by Puria Nafisi Azizi.
+Designed, written and maintained by Puria Nafisi Azizi with contributions by Denis Jaromil Roio
 
 **[🔝 back to top](#toc)**
 
@@ -184,7 +209,7 @@ Please first take a look at the [Dyne.org - Contributor License Agreement](CONTR
 
 ***
 ## 💼 License
-    lsget - **A lightweight CDN UI: Self-hosted file server with a full‑screen, neon‑themed TUI in your browser.**
+    lsget - **Neon terminal file explorer in your browser. Read-only FTP, UNIX style interface**
     Copyleft 🄯2025 Dyne.org foundation, Amsterdam
 
     This program is free software: you can redistribute it and/or modify
