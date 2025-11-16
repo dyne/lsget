@@ -2576,7 +2576,7 @@ func main() {
 
 	if *printVersion {
 		fmt.Printf("lsget %s\n", version)
-		fmt.Println("Tiny Go-powered web server with a full‑screen, neon‑themed browser terminal.")
+		fmt.Println("A lightweight CDN UI: Self-hosted file server with a full‑screen, neon‑themed TUI in your browser.")
 		fmt.Println()
 		fmt.Println("Copyright © 2025 Dyne.org foundation, Amsterdam")
 		fmt.Println("Licensed under GNU Affero General Public License v3.0")
