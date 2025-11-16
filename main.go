@@ -2817,6 +2817,42 @@ func main() {
 
 	s := newServer(rootAbs, *catMax, *logfileFlag, *baseURL)
 
+	// Special case: if sitemap is 0 and baseURL is set, generate once and exit
+	if *sitemapInterval == 0 && *baseURL != "" {
+		fmt.Println("=== Generating sitemap (debug mode) ===")
+		fmt.Printf("Base URL: %s\n", *baseURL)
+		fmt.Printf("Root directory: %s\n", rootAbs)
+
+		if err := s.generateSitemap(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to generate sitemap: %v\n", err)
+			exitFunc(1)
+		}
+
+		sitemapPath := filepath.Join(rootAbs, "sitemap.xml")
+		info, err := os.Stat(sitemapPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to stat sitemap: %v\n", err)
+			exitFunc(1)
+		}
+
+		fmt.Printf("✓ Sitemap generated successfully: %s (%d bytes)\n", sitemapPath, info.Size())
+
+		// Show first few lines
+		content, err := os.ReadFile(sitemapPath)
+		if err == nil {
+			lines := strings.Split(string(content), "\n")
+			fmt.Println("\n=== Sitemap preview (first 10 lines) ===")
+			for i := 0; i < len(lines) && i < 10; i++ {
+				fmt.Println(lines[i])
+			}
+			if len(lines) > 10 {
+				fmt.Printf("... (%d more lines)\n", len(lines)-10)
+			}
+		}
+
+		exitFunc(0)
+	}
+
 	// Create PID file if specified
 	if *pidFileFlag != "" {
 		pid := os.Getpid()
@@ -2830,7 +2866,9 @@ func main() {
 	}
 
 	// Start sitemap generator if configured
-	s.startSitemapGenerator(*sitemapInterval)
+	if *sitemapInterval > 0 {
+		s.startSitemapGenerator(*sitemapInterval)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", s.handleConfig)
