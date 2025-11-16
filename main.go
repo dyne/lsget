@@ -253,14 +253,6 @@ func readDocFile(dir string) (string, string) {
 //go:embed index.html
 var embeddedIndex []byte
 
-// ===== Embed static JavaScript assets =====
-
-//go:embed static/marked.min.js
-var markedJS []byte
-
-//go:embed static/datastar.js
-var datastarJS []byte
-
 // ===== Server state =====
 
 type session struct {
@@ -2569,23 +2561,6 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(completeResp{Items: items})
 }
 
-// handleVendorJS serves embedded JavaScript dependencies
-func handleVendorJS(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	
-	switch r.URL.Path {
-	case "/static/marked.min.js":
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(markedJS)
-	case "/static/datastar.js":
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(datastarJS)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
 // ===== Main =====
 
 func main() {
@@ -2647,8 +2622,6 @@ func main() {
 	mux.HandleFunc("/api/complete", s.handleComplete)
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/static/", s.handleStaticFile)
-	mux.HandleFunc("/static/marked.min.js", handleVendorJS)
-	mux.HandleFunc("/static/datastar.js", handleVendorJS)
 	mux.HandleFunc("/", s.handleIndex) // Catch-all route must be last
 
 	fmt.Printf("Serving %s on http://%s  (cat max = %d bytes)\n", rootAbs, *addr, *catMax)
