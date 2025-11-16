@@ -162,14 +162,72 @@ func colorizeName(info os.FileInfo, name string) string {
 	return color + name + colorReset
 }
 
-// isImageFile checks if filename has a browser-supported image extension
-func isImageFile(filename string) bool {
+// FileCategory represents supported file types for different commands
+type FileCategory int
+
+const (
+	FileCategoryUnknown FileCategory = iota
+	FileCategoryText
+	FileCategoryImage
+	FileCategoryArchive
+	FileCategoryVideo
+	FileCategoryAudio
+	FileCategoryDocument
+)
+
+func (fc FileCategory) String() string {
+	switch fc {
+	case FileCategoryText:
+		return "text"
+	case FileCategoryImage:
+		return "image"
+	case FileCategoryArchive:
+		return "archive"
+	case FileCategoryVideo:
+		return "video"
+	case FileCategoryAudio:
+		return "audio"
+	case FileCategoryDocument:
+		return "document"
+	default:
+		return "unknown"
+	}
+}
+
+// getFileCategory determines the category of a file by extension
+func getFileCategory(filename string) FileCategory {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
+	// Text files
+	case ".txt", ".md", ".rst", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg":
+		return FileCategoryText
+	case ".html", ".htm", ".css", ".js", ".ts", ".jsx", ".tsx":
+		return FileCategoryText
+	case ".c", ".cpp", ".h", ".hpp", ".go", ".rs", ".py", ".rb", ".java", ".php", ".sh", ".bash":
+		return FileCategoryText
+
+	// Images
 	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico":
-		return true
+		return FileCategoryImage
+
+	// Archives
+	case ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".tgz", ".tbz2":
+		return FileCategoryArchive
+
+	// Video
+	case ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v":
+		return FileCategoryVideo
+
+	// Audio
+	case ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma":
+		return FileCategoryAudio
+
+	// Documents
+	case ".pdf", ".doc", ".docx", ".odt", ".xls", ".xlsx", ".ppt", ".pptx":
+		return FileCategoryDocument
+
 	default:
-		return false
+		return FileCategoryUnknown
 	}
 }
 
@@ -266,14 +324,16 @@ type server struct {
 	sessions map[string]*session
 	mu       sync.RWMutex
 	logfile  string // path to log file for statistics
+	baseURL  string // base URL for the site (e.g., https://files.example.com)
 }
 
-func newServer(rootAbs string, catMax int64, logfile string) *server {
+func newServer(rootAbs string, catMax int64, logfile, baseURL string) *server {
 	return &server{
 		rootAbs:  rootAbs,
 		catMax:   catMax,
 		sessions: make(map[string]*session),
 		logfile:  logfile,
+		baseURL:  baseURL,
 	}
 }
 
@@ -361,6 +421,157 @@ func (s *server) shouldIgnore(realPath, name string) bool {
 
 // ===== Utilities =====
 
+// sitemapEntry represents an entry in the sitemap
+type sitemapEntry struct {
+	loc         string
+	lastmod     string
+	isImage     bool
+	imageURL    string
+	isVideo     bool
+	videoURL    string
+	isDocument  bool
+	isDir       bool
+	fileSize    int64
+}
+
+// generateSitemap creates a sitemap.xml file in the root directory
+func (s *server) generateSitemap() error {
+	if s.baseURL == "" {
+		return nil
+	}
+
+	var entries []sitemapEntry
+	err := filepath.Walk(s.rootAbs, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		if s.shouldIgnore(path, filepath.Base(path)) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		vp, err := s.virtualFromReal(path)
+		if err != nil {
+			return nil
+		}
+
+		// Format lastmod in W3C Datetime format (ISO 8601)
+		lastmod := info.ModTime().Format(time.RFC3339)
+
+		entry := sitemapEntry{
+			loc:     s.baseURL + vp,
+			lastmod: lastmod,
+			isDir:   info.IsDir(),
+		}
+
+		// Check file category for special handling
+		if !info.IsDir() {
+			entry.fileSize = info.Size()
+			category := getFileCategory(filepath.Base(path))
+			if category == FileCategoryImage {
+				entry.isImage = true
+				entry.imageURL = s.baseURL + vp
+			} else if category == FileCategoryVideo {
+				entry.isVideo = true
+				entry.videoURL = s.baseURL + vp
+			} else if category == FileCategoryDocument {
+				entry.isDocument = true
+			}
+		}
+
+		entries = append(entries, entry)
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Build XML with proper namespaces
+	var xml strings.Builder
+	xml.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	xml.WriteString(`<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"` + "\n")
+	xml.WriteString(`        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"` + "\n")
+	xml.WriteString(`        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"` + "\n")
+	xml.WriteString(`        xmlns:xhtml="http://www.w3.org/1999/xhtml">` + "\n")
+
+	for _, entry := range entries {
+		xml.WriteString("  <url>\n")
+		xml.WriteString("    <loc>" + template.HTMLEscapeString(entry.loc) + "</loc>\n")
+		xml.WriteString("    <lastmod>" + entry.lastmod + "</lastmod>\n")
+
+		// Add changefreq and priority based on type
+		if entry.isDir {
+			xml.WriteString("    <changefreq>daily</changefreq>\n")
+			xml.WriteString("    <priority>0.8</priority>\n")
+		} else if entry.isImage {
+			xml.WriteString("    <changefreq>monthly</changefreq>\n")
+			xml.WriteString("    <priority>0.6</priority>\n")
+			// Add image-specific data using Google's image extension
+			xml.WriteString("    <image:image>\n")
+			xml.WriteString("      <image:loc>" + template.HTMLEscapeString(entry.imageURL) + "</image:loc>\n")
+			xml.WriteString("    </image:image>\n")
+		} else if entry.isVideo {
+			xml.WriteString("    <changefreq>monthly</changefreq>\n")
+			xml.WriteString("    <priority>0.7</priority>\n")
+			// Add video-specific data using Google's video extension
+			xml.WriteString("    <video:video>\n")
+			xml.WriteString("      <video:content_loc>" + template.HTMLEscapeString(entry.videoURL) + "</video:content_loc>\n")
+			// Extract filename without extension for title
+			videoName := filepath.Base(entry.videoURL)
+			videoTitle := videoName[:len(videoName)-len(filepath.Ext(videoName))]
+			xml.WriteString("      <video:title>" + template.HTMLEscapeString(videoTitle) + "</video:title>\n")
+			xml.WriteString("      <video:description>" + template.HTMLEscapeString("Video file: "+videoName) + "</video:description>\n")
+			xml.WriteString("    </video:video>\n")
+		} else if entry.isDocument {
+			// Documents (PDFs, DOCs, etc.) get higher priority as they're often primary content
+			xml.WriteString("    <changefreq>monthly</changefreq>\n")
+			xml.WriteString("    <priority>0.9</priority>\n")
+			// Add a comment to indicate this is a document (no official schema, but helpful for debugging)
+			docName := filepath.Base(entry.loc)
+			xml.WriteString("    <!-- Document: " + template.HTMLEscapeString(docName) + " (" + formatHumanSize(entry.fileSize) + ") -->\n")
+		} else {
+			xml.WriteString("    <changefreq>weekly</changefreq>\n")
+			xml.WriteString("    <priority>0.5</priority>\n")
+		}
+
+		xml.WriteString("  </url>\n")
+	}
+
+	xml.WriteString("</urlset>\n")
+
+	sitemapPath := filepath.Join(s.rootAbs, "sitemap.xml")
+	return os.WriteFile(sitemapPath, []byte(xml.String()), 0644)
+}
+
+// startSitemapGenerator starts periodic sitemap regeneration
+func (s *server) startSitemapGenerator(intervalMinutes int) {
+	if intervalMinutes <= 0 || s.baseURL == "" {
+		return
+	}
+
+	if err := s.generateSitemap(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to generate initial sitemap: %v\n", err)
+	} else {
+		fmt.Printf("Generated sitemap.xml (%s/sitemap.xml)\n", s.rootAbs)
+	}
+
+	go func() {
+		ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			if err := s.generateSitemap(); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to regenerate sitemap: %v\n", err)
+			}
+		}
+	}()
+}
+
 // getClientIP extracts the real client IP, checking X-Forwarded-For first
 func getClientIP(r *http.Request) string {
 	// Check X-Forwarded-For header (for reverse proxies)
@@ -386,16 +597,16 @@ func logCommand(cmd, filePath, ip string) {
 	if logFile == "" {
 		return
 	}
-	
+
 	logMutex.Lock()
 	defer logMutex.Unlock()
-	
+
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	
+
 	timestamp := time.Now().Format("[02/Jan/2006:15:04:05 -0700]")
 	// Format: ip - - timestamp "POST /api/exec?cmd=COMMAND&file=PATH HTTP/1.1" 200 0 "-" "-"
 	logLine := fmt.Sprintf("%s - - %s \"POST /api/exec?cmd=%s&file=%s HTTP/1.1\" 200 0 \"-\" \"-\"\n",
@@ -485,6 +696,17 @@ func (s *server) realFromVirtual(v string) (string, error) {
 	return abs, nil
 }
 
+func (s *server) virtualFromReal(realPath string) (string, error) {
+rel, err := filepath.Rel(s.rootAbs, realPath)
+if err != nil {
+return "", err
+}
+if rel == "." {
+return "/", nil
+}
+return "/" + filepath.ToSlash(rel), nil
+}
+
 // simple args parser: supports quotes ("", ”) and backslash escapes inside quotes
 func parseArgs(line string) []string {
 	var args []string
@@ -542,7 +764,7 @@ func formatLong(info os.FileInfo, name string, humanReadable bool) string {
 	mode := info.Mode().String()
 	size := info.Size()
 	mod := info.ModTime().Format("Jan _2 15:04")
-	
+
 	if humanReadable {
 		sizeStr := formatHumanSize(size)
 		return fmt.Sprintf("%s %10s %s %s", mode, sizeStr, mod, name)
@@ -883,6 +1105,28 @@ func (s *server) processHTMLTemplate(htmlContent []byte, requestPath string) []b
 	return []byte(result)
 }
 
+func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
+	sitemapPath := filepath.Join(s.rootAbs, "sitemap.xml")
+
+	// Check if sitemap exists
+	if _, err := os.Stat(sitemapPath); os.IsNotExist(err) {
+		// Generate on-demand if not exists
+		if s.baseURL != "" {
+			if err := s.generateSitemap(); err != nil {
+				http.Error(w, "Failed to generate sitemap", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			http.Error(w, "Sitemap not configured (missing -baseurl flag)", http.StatusNotFound)
+			return
+		}
+	}
+
+	// Serve the file
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	http.ServeFile(w, r, sitemapPath)
+}
+
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
 
@@ -1008,10 +1252,21 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			names = append(names, name)
 		}
 		sort.Strings(names)
+
+		// Add ".." at the beginning if not at root
+		if sess.cwd != "/" {
+			names = append([]string{".."}, names...)
+		}
+
 		if !long {
 			// Colorized simple listing
 			var coloredNames []string
 			for _, name := range names {
+				if name == ".." {
+					// Special handling for parent directory
+					coloredNames = append(coloredNames, colorBlue+colorBold+"../"+colorReset)
+					continue
+				}
 				info, err := os.Stat(filepath.Join(realCwd, name))
 				if err != nil {
 					coloredNames = append(coloredNames, name)
@@ -1024,6 +1279,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 		// Colorized long listing
 		for _, name := range names {
+			if name == ".." {
+				// Special handling for parent directory in long format
+				longs = append(longs, "drwxr-xr-x          - "+colorBlue+colorBold+"../"+colorReset)
+				continue
+			}
 			info, err := os.Stat(filepath.Join(realCwd, name))
 			if err != nil {
 				continue
@@ -1085,9 +1345,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Check if file type is supported by cat
+		category := getFileCategory(argv[0])
+
 		// Display images inline
-		if isImageFile(argv[0]) {
-			url := "/api/static" + urlEscapeVirtual(vp)
+		if category == FileCategoryImage {
+			url := urlEscapeVirtual(vp)
 			name := filepath.Base(argv[0])
 			imgHTML := fmt.Sprintf(
 				`<div style="margin: 0.5em 0;">`+
@@ -1098,6 +1361,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 					`</div>`,
 				url, url, name, name, formatHumanSize(info.Size()))
 			_ = json.NewEncoder(w).Encode(execResp{HTML: imgHTML})
+			return
+		}
+
+		// Only text files and unknown files (to be checked by content) can be displayed
+		if category != FileCategoryText && category != FileCategoryUnknown {
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("cat: cannot display %s files (use 'get' to download)", category)})
 			return
 		}
 
@@ -1119,7 +1388,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 		sample := buf.Bytes()
 		if !looksText(sample) {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: binary file (skipping)"})
+			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: binary file (use 'get' to download)"})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(execResp{Output: string(sample)})
@@ -1338,20 +1607,23 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Get the host from the request
-		host := r.Host
-		if host == "" {
-			host = "localhost:8080"
-		}
-
-		// Determine protocol (check if request came through HTTPS)
-		protocol := "http"
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			protocol = "https"
-		}
-
 		// Build the full URL for the file
-		fileURL := fmt.Sprintf("%s://%s/api/static%s", protocol, host, vp)
+		var fileURL string
+		if s.baseURL != "" {
+			// Use configured base URL (clean, no /api/static)
+			fileURL = s.baseURL + vp
+		} else {
+			// Fallback to request-based URL
+			host := r.Host
+			if host == "" {
+				host = "localhost:8080"
+			}
+			protocol := "http"
+			if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+				protocol = "https"
+			}
+			fileURL = fmt.Sprintf("%s://%s/%s", protocol, host, vp)
+		}
 
 		// Log the share command
 		logCommand(cmd, vp, getClientIP(r))
@@ -1489,7 +1761,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		md5Hash := md5.New()
 		sha256Hash := sha256.New()
-		
+
 		// Use MultiWriter to compute both hashes in one pass
 		writer := io.MultiWriter(md5Hash, sha256Hash)
 		if _, err := io.Copy(writer, f); err != nil {
@@ -1553,10 +1825,10 @@ func parseLogStats(logFilePath string) (*logStats, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		// Parse Combined Log Format
 		// Format: ip - user [timestamp] "method path proto" status size "referer" "user-agent"
-		
+
 		// Extract request line (between first and second quote)
 		firstQuote := strings.Index(line, "\"")
 		if firstQuote == -1 {
@@ -1567,16 +1839,16 @@ func parseLogStats(logFilePath string) (*logStats, error) {
 			continue
 		}
 		requestLine := line[firstQuote+1 : firstQuote+1+secondQuote]
-		
+
 		// Parse request line: "METHOD PATH PROTO"
 		parts := strings.Fields(requestLine)
 		if len(parts) < 2 {
 			continue
 		}
-		
+
 		method := parts[0]
 		urlPath := parts[1]
-		
+
 		// Parse status code (after the second quote)
 		afterRequest := line[firstQuote+1+secondQuote+1:]
 		statusParts := strings.Fields(afterRequest)
@@ -1584,12 +1856,12 @@ func parseLogStats(logFilePath string) (*logStats, error) {
 			continue
 		}
 		statusCode := statusParts[0]
-		
+
 		// Only count successful requests (2xx status codes)
 		if !strings.HasPrefix(statusCode, "2") {
 			continue
 		}
-		
+
 		// Categorize the request
 		if strings.HasPrefix(urlPath, "/api/static/") && method == "GET" {
 			// Direct access via static endpoint
@@ -1682,7 +1954,7 @@ func urlDecode(s string) (string, error) {
 // renderStatsTable renders statistics as an ASCII table
 func renderStatsTable(stats *logStats) string {
 	var result strings.Builder
-	
+
 	// Combine all unique paths and calculate downloads (gets + directAccess)
 	type pathStats struct {
 		path         string
@@ -1692,7 +1964,7 @@ func renderStatsTable(stats *logStats) string {
 		downloads    int // gets + directAccess
 		checksums    int
 	}
-	
+
 	pathMap := make(map[string]*pathStats)
 	for path, count := range stats.shares {
 		if pathMap[path] == nil {
@@ -1718,16 +1990,16 @@ func renderStatsTable(stats *logStats) string {
 		}
 		pathMap[path].checksums = count
 	}
-	
+
 	// Calculate downloads for each path
 	for _, ps := range pathMap {
 		ps.downloads = ps.gets + ps.directAccess
 	}
-	
+
 	if len(pathMap) == 0 {
 		return "No statistics available"
 	}
-	
+
 	// Convert to slice and sort by downloads (descending)
 	pathList := make([]*pathStats, 0, len(pathMap))
 	for _, ps := range pathMap {
@@ -1740,7 +2012,7 @@ func renderStatsTable(stats *logStats) string {
 		}
 		return pathList[i].path < pathList[j].path
 	})
-	
+
 	// Calculate column widths
 	maxPathLen := 20
 	for _, ps := range pathList {
@@ -1750,13 +2022,13 @@ func renderStatsTable(stats *logStats) string {
 			maxPathLen = 50
 		}
 	}
-	
+
 	// Build table header
 	result.WriteString(colorBold)
 	result.WriteString("┌─")
 	result.WriteString(strings.Repeat("─", maxPathLen))
 	result.WriteString("─┬────────┬──────┬───────────────┬───────────┬───────────┐\n")
-	
+
 	result.WriteString("│ ")
 	result.WriteString(fmt.Sprintf("%-*s", maxPathLen, "File/Directory"))
 	result.WriteString(" │ ")
@@ -1770,32 +2042,32 @@ func renderStatsTable(stats *logStats) string {
 	result.WriteString(" │ ")
 	result.WriteString(fmt.Sprintf("%-9s", "Checksums"))
 	result.WriteString(" │\n")
-	
+
 	result.WriteString("├─")
 	result.WriteString(strings.Repeat("─", maxPathLen))
 	result.WriteString("─┼────────┼──────┼───────────────┼───────────┼───────────┤\n")
 	result.WriteString(colorReset)
-	
+
 	// Build table rows
 	totalShares := 0
 	totalGets := 0
 	totalDirectAccess := 0
 	totalDownloads := 0
 	totalChecksums := 0
-	
+
 	for _, ps := range pathList {
 		totalShares += ps.shares
 		totalGets += ps.gets
 		totalDirectAccess += ps.directAccess
 		totalDownloads += ps.downloads
 		totalChecksums += ps.checksums
-		
+
 		// Truncate path if too long
 		displayPath := ps.path
 		if len(displayPath) > maxPathLen {
 			displayPath = displayPath[:maxPathLen-3] + "..."
 		}
-		
+
 		result.WriteString("│ ")
 		result.WriteString(colorCyan)
 		result.WriteString(fmt.Sprintf("%-*s", maxPathLen, displayPath))
@@ -1823,13 +2095,13 @@ func renderStatsTable(stats *logStats) string {
 		result.WriteString(colorReset)
 		result.WriteString(" │\n")
 	}
-	
+
 	// Build table footer with totals
 	result.WriteString(colorBold)
 	result.WriteString("├─")
 	result.WriteString(strings.Repeat("─", maxPathLen))
 	result.WriteString("─┼────────┼──────┼───────────────┼───────────┼───────────┤\n")
-	
+
 	result.WriteString("│ ")
 	result.WriteString(fmt.Sprintf("%-*s", maxPathLen, "TOTAL"))
 	result.WriteString(" │ ")
@@ -1843,12 +2115,12 @@ func renderStatsTable(stats *logStats) string {
 	result.WriteString(" │ ")
 	result.WriteString(fmt.Sprintf("%9d", totalChecksums))
 	result.WriteString(" │\n")
-	
+
 	result.WriteString("└─")
 	result.WriteString(strings.Repeat("─", maxPathLen))
 	result.WriteString("─┴────────┴──────┴───────────────┴───────────┴───────────┘")
 	result.WriteString(colorReset)
-	
+
 	return result.String()
 }
 
@@ -2537,16 +2809,9 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if req.TextOnly {
-					// read a small sample to check if it looks like text
-					fp := filepath.Join(baseR, name)
-					f, err := os.Open(fp)
-					if err != nil {
-						continue
-					}
-					sample := make([]byte, 4096)
-					n, _ := f.Read(sample)
-					_ = f.Close()
-					if !looksText(sample[:n]) {
+					// Use file category to check if viewable (text or image)
+          cat := getFileCategory(name)
+          if !(cat == FileCategoryText || cat == FileCategoryImage) {
 						continue
 					}
 				}
@@ -2574,12 +2839,14 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	var (
-		printVersion = flag.Bool("version", false, "Print the version of this software and exits")
-		addr         = flag.String("addr", "localhost:8080", "address to listen on")
-		dir          = flag.String("dir", ".", "directory to expose as root")
-		catMax       = flag.Int64("catmax", 256*1024, "max bytes printable via `cat` and used by completion")
-		pidFileFlag  = flag.String("pid", "", "path to PID file")
-		logfileFlag  = flag.String("logfile", "", "path to log file for statistics")
+		printVersion    = flag.Bool("version", false, "Print the version of this software and exits")
+		addr            = flag.String("addr", "localhost:8080", "address to listen on")
+		dir             = flag.String("dir", ".", "directory to expose as root")
+		catMax          = flag.Int64("catmax", 4*1024, "max bytes printable via `cat` and used by completion")
+		pidFileFlag     = flag.String("pid", "", "path to PID file")
+		logfileFlag     = flag.String("logfile", "", "path to log file for statistics")
+		baseURL         = flag.String("baseurl", "", "base URL for the site (e.g., https://files.example.com)")
+		sitemapInterval = flag.Int("sitemap", 0, "generate sitemap.xml every N minutes (0 = disabled)")
 	)
 	flag.Parse()
 
@@ -2611,7 +2878,43 @@ func main() {
 		logFile = *logfileFlag
 	}
 
-	s := newServer(rootAbs, *catMax, *logfileFlag)
+	s := newServer(rootAbs, *catMax, *logfileFlag, *baseURL)
+
+	// Special case: if sitemap is 0 and baseURL is set, generate once and exit
+	if *sitemapInterval == 0 && *baseURL != "" {
+		fmt.Println("=== Generating sitemap (debug mode) ===")
+		fmt.Printf("Base URL: %s\n", *baseURL)
+		fmt.Printf("Root directory: %s\n", rootAbs)
+
+		if err := s.generateSitemap(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to generate sitemap: %v\n", err)
+			exitFunc(1)
+		}
+
+		sitemapPath := filepath.Join(rootAbs, "sitemap.xml")
+		info, err := os.Stat(sitemapPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to stat sitemap: %v\n", err)
+			exitFunc(1)
+		}
+
+		fmt.Printf("✓ Sitemap generated successfully: %s (%d bytes)\n", sitemapPath, info.Size())
+
+		// Show first few lines
+		content, err := os.ReadFile(sitemapPath)
+		if err == nil {
+			lines := strings.Split(string(content), "\n")
+			fmt.Println("\n=== Sitemap preview (first 10 lines) ===")
+			for i := 0; i < len(lines) && i < 10; i++ {
+				fmt.Println(lines[i])
+			}
+			if len(lines) > 10 {
+				fmt.Printf("... (%d more lines)\n", len(lines)-10)
+			}
+		}
+
+		exitFunc(0)
+	}
 
 	// Create PID file if specified
 	if *pidFileFlag != "" {
@@ -2625,12 +2928,18 @@ func main() {
 		pidFile = *pidFileFlag
 	}
 
+	// Start sitemap generator if configured
+	if *sitemapInterval > 0 {
+		s.startSitemapGenerator(*sitemapInterval)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/exec", s.handleExec)
 	mux.HandleFunc("/api/complete", s.handleComplete)
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/static/", s.handleStaticFile)
+	mux.HandleFunc("/sitemap.xml", s.handleSitemap)
 	mux.HandleFunc("/", s.handleIndex) // Catch-all route must be last
 
 	fmt.Printf("Serving %s on http://%s  (cat max = %d bytes)\n", rootAbs, *addr, *catMax)
@@ -2733,9 +3042,9 @@ func logRequests(next http.Handler) http.Handler {
 
 		logLine := fmt.Sprintf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"\n",
 			ip, "-", user, timestamp, requestLine, statusCode, sizeStr, referer, userAgent)
-		
+
 		fmt.Print(logLine)
-		
+
 		// Write to log file if specified
 		if logFile != "" {
 			logMutex.Lock()
