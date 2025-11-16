@@ -231,22 +231,6 @@ func getFileCategory(filename string) FileCategory {
 	}
 }
 
-// isViewableFile checks if file can be viewed with cat command
-func isViewableFile(filename string) bool {
-	cat := getFileCategory(filename)
-	return cat == FileCategoryText || cat == FileCategoryImage
-}
-
-// isDownloadableFile checks if file can be downloaded (all files)
-func isDownloadableFile(filename string) bool {
-	return true // All files can be downloaded
-}
-
-// isImageFile checks if filename is an image (for backward compatibility)
-func isImageFile(filename string) bool {
-	return getFileCategory(filename) == FileCategoryImage
-}
-
 // readDocFile returns the raw contents of documentation files if present in dir.
 // Supports README.md, .txt, .nfo, and .rst files in priority order.
 func readDocFile(dir string) (string, string) {
@@ -437,13 +421,26 @@ func (s *server) shouldIgnore(realPath, name string) bool {
 
 // ===== Utilities =====
 
+// sitemapEntry represents an entry in the sitemap
+type sitemapEntry struct {
+	loc         string
+	lastmod     string
+	isImage     bool
+	imageURL    string
+	isVideo     bool
+	videoURL    string
+	isDocument  bool
+	isDir       bool
+	fileSize    int64
+}
+
 // generateSitemap creates a sitemap.xml file in the root directory
 func (s *server) generateSitemap() error {
 	if s.baseURL == "" {
 		return nil
 	}
 
-	var urls []string
+	var entries []sitemapEntry
 	err := filepath.Walk(s.rootAbs, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -461,7 +458,31 @@ func (s *server) generateSitemap() error {
 			return nil
 		}
 
-    urls = append(urls, s.baseURL+vp)
+		// Format lastmod in W3C Datetime format (ISO 8601)
+		lastmod := info.ModTime().Format(time.RFC3339)
+
+		entry := sitemapEntry{
+			loc:     s.baseURL + vp,
+			lastmod: lastmod,
+			isDir:   info.IsDir(),
+		}
+
+		// Check file category for special handling
+		if !info.IsDir() {
+			entry.fileSize = info.Size()
+			category := getFileCategory(filepath.Base(path))
+			if category == FileCategoryImage {
+				entry.isImage = true
+				entry.imageURL = s.baseURL + vp
+			} else if category == FileCategoryVideo {
+				entry.isVideo = true
+				entry.videoURL = s.baseURL + vp
+			} else if category == FileCategoryDocument {
+				entry.isDocument = true
+			}
+		}
+
+		entries = append(entries, entry)
 
 		return nil
 	})
@@ -470,13 +491,54 @@ func (s *server) generateSitemap() error {
 		return err
 	}
 
+	// Build XML with proper namespaces
 	var xml strings.Builder
 	xml.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	xml.WriteString(`<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` + "\n")
+	xml.WriteString(`<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"` + "\n")
+	xml.WriteString(`        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"` + "\n")
+	xml.WriteString(`        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"` + "\n")
+	xml.WriteString(`        xmlns:xhtml="http://www.w3.org/1999/xhtml">` + "\n")
 
-	for _, u := range urls {
+	for _, entry := range entries {
 		xml.WriteString("  <url>\n")
-		xml.WriteString("    <loc>" + template.HTMLEscapeString(u) + "</loc>\n")
+		xml.WriteString("    <loc>" + template.HTMLEscapeString(entry.loc) + "</loc>\n")
+		xml.WriteString("    <lastmod>" + entry.lastmod + "</lastmod>\n")
+
+		// Add changefreq and priority based on type
+		if entry.isDir {
+			xml.WriteString("    <changefreq>daily</changefreq>\n")
+			xml.WriteString("    <priority>0.8</priority>\n")
+		} else if entry.isImage {
+			xml.WriteString("    <changefreq>monthly</changefreq>\n")
+			xml.WriteString("    <priority>0.6</priority>\n")
+			// Add image-specific data using Google's image extension
+			xml.WriteString("    <image:image>\n")
+			xml.WriteString("      <image:loc>" + template.HTMLEscapeString(entry.imageURL) + "</image:loc>\n")
+			xml.WriteString("    </image:image>\n")
+		} else if entry.isVideo {
+			xml.WriteString("    <changefreq>monthly</changefreq>\n")
+			xml.WriteString("    <priority>0.7</priority>\n")
+			// Add video-specific data using Google's video extension
+			xml.WriteString("    <video:video>\n")
+			xml.WriteString("      <video:content_loc>" + template.HTMLEscapeString(entry.videoURL) + "</video:content_loc>\n")
+			// Extract filename without extension for title
+			videoName := filepath.Base(entry.videoURL)
+			videoTitle := videoName[:len(videoName)-len(filepath.Ext(videoName))]
+			xml.WriteString("      <video:title>" + template.HTMLEscapeString(videoTitle) + "</video:title>\n")
+			xml.WriteString("      <video:description>" + template.HTMLEscapeString("Video file: "+videoName) + "</video:description>\n")
+			xml.WriteString("    </video:video>\n")
+		} else if entry.isDocument {
+			// Documents (PDFs, DOCs, etc.) get higher priority as they're often primary content
+			xml.WriteString("    <changefreq>monthly</changefreq>\n")
+			xml.WriteString("    <priority>0.9</priority>\n")
+			// Add a comment to indicate this is a document (no official schema, but helpful for debugging)
+			docName := filepath.Base(entry.loc)
+			xml.WriteString("    <!-- Document: " + template.HTMLEscapeString(docName) + " (" + formatHumanSize(entry.fileSize) + ") -->\n")
+		} else {
+			xml.WriteString("    <changefreq>weekly</changefreq>\n")
+			xml.WriteString("    <priority>0.5</priority>\n")
+		}
+
 		xml.WriteString("  </url>\n")
 	}
 
@@ -2748,7 +2810,8 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 				}
 				if req.TextOnly {
 					// Use file category to check if viewable (text or image)
-					if !isViewableFile(name) {
+          cat := getFileCategory(name)
+          if !(cat == FileCategoryText || cat == FileCategoryImage) {
 						continue
 					}
 				}
