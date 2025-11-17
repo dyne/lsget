@@ -72,17 +72,28 @@ docker-compose up
 ## Image Details
 
 ### Base Images
-- **Build stage**: `golang:1.24-alpine` - Minimal Go environment
-- **Runtime stage**: `alpine:latest` - Minimal Linux distro
+- **Build stage**: `golang:1.24-alpine` - Minimal Go build environment
+- **Runtime stage**: `gcr.io/distroless/static-debian12:nonroot` - Google's hardened distroless image
 
 ### Runtime Dependencies
-- `ca-certificates` - For HTTPS support
-- `curl` - For healthcheck support
+- **None** - Fully static binary with ca-certificates embedded
+- No shell, no package manager, no GNU utilities
+- Minimal attack surface
 
-### Security
-- Runs as non-root user `lsget` (UID 1000)
-- Static binary with no CGO dependencies
-- Minimal attack surface with Alpine Linux
+### Security Features
+- ✅ **Distroless base** - No shell, no package manager
+- ✅ **Non-root user** - Runs as UID 65532 (`nonroot`)
+- ✅ **Static binary** - No CGO, no dynamic linking
+- ✅ **Zero Go dependencies** - Uses only Go standard library
+- ✅ **Vendored JS assets** - JavaScript dependencies embedded in binary
+- ✅ **Minimal size** - Only ~11MB vs ~31MB with Alpine
+- ✅ **Reduced CVEs** - Minimal software = minimal vulnerabilities
+- ✅ **Immutable** - No way to exec into container or modify it
+
+### Trade-offs
+- ❌ **No debugging** - Can't `docker exec` into container (no shell)
+- ❌ **No healthcheck command** - Platforms must use external health checks
+- ⚠️ **Permission setup** - Volumes must be writable by UID 65532
 
 ### Volumes
 - `/data` - Directory for serving files

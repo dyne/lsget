@@ -37,6 +37,7 @@ Perfect for:
 | Session isolation    | Per‑browser *in‑memory* CWD tracked via cookie — multi-user ready. |
 | Live reload          | `task dev` ⇒ [Air](https://github.com/cosmtrek/air) rebuilds `main.go` on save for rapid development. |
 | Zero‑config binary   | `go run .` or `go build` produces a single executable with embedded assets. |
+| Supply chain security| JavaScript dependencies vendored locally to reduce supply chain attacks. |
 
 ![Screenshot](./screenshot.png)
 <img width="1700" height="918" alt="image" src="https://github.com/user-attachments/assets/0a4a5fce-6d09-4ef3-9211-d66d0244748d" />
@@ -199,6 +200,10 @@ docker run -e LSGET_ADDR=0.0.0.0:8080 -e LSGET_DIR=/data lsget
 The included `docker-compose.yaml` uses environment variables with sensible defaults. You can customize the configuration by creating a `.env` file:
 
 ```bash
+# Create directories with proper permissions
+mkdir -p files logs
+chmod 755 files logs
+
 # Copy the example environment file
 cp .env.example .env
 
@@ -214,6 +219,39 @@ docker-compose up -d
 - **Directory**: `/data` (mapped to `./files` on host)
 - **Log file**: `/logs/access.log` (mapped to `./logs` on host)
 - **Port mapping**: `8080:8080` (customizable via `LSGET_PORT` env var)
+
+**Security & Permissions:**
+
+The Docker image uses **Google's Distroless base** for maximum security:
+- ✅ **10.9MB** image size (65% smaller than Alpine)
+- ✅ No shell, no package manager
+- ✅ Minimal attack surface
+- ✅ Runs as non-root user (UID 65532)
+
+**Permission Setup for Volumes:**
+
+Since the container runs as UID 65532 (`nonroot` user), mounted volumes must be writable:
+
+```bash
+# Create directories with proper permissions
+mkdir -p files logs
+
+# Option 1: World-writable (simple, less secure)
+chmod 777 files logs
+
+# Option 2: Specific ownership (more secure)
+sudo chown -R 65532:65532 files logs
+
+# Option 3: Your user + group write (best for dev)
+sudo chown -R $(id -u):$(id -g) files logs
+chmod 775 files logs
+```
+
+**For Coolify/Platform Deployments:**
+
+Most platforms handle permissions automatically. If you encounter issues:
+- Coolify: Volume permissions are usually handled by the platform
+- Ensure the deployment user has write access to mount paths
 
 **Example 1: Simple setup (no baseurl needed):**
 
@@ -259,6 +297,55 @@ docker-compose down
 # Rebuild and start
 docker-compose up -d --build
 ```
+
+**Testing Docker locally with Taskfile:**
+
+```bash
+# Build and test Docker image (quick version check)
+task docker-test
+
+# Build Docker image
+task docker-build
+
+# Run Docker container interactively
+task docker-run
+
+# Start with docker-compose
+task docker-compose-up
+
+# View docker-compose logs
+task docker-compose-logs
+
+# Stop docker-compose
+task docker-compose-down
+
+# Rebuild and restart docker-compose
+task docker-compose-rebuild
+```
+
+### Vendored Dependencies
+
+To enhance security and reduce supply chain attacks, JavaScript dependencies are vendored locally:
+
+**Go dependencies**: lsget has **zero direct Go dependencies** - it uses only the Go standard library. All dependencies in `go.mod` are indirect and only for development tools (air, golangci-lint).
+
+**JavaScript dependencies**: The following libraries are vendored locally and embedded in the binary:
+- `marked.min.js` - Markdown rendering library
+- `datastar.js` - Reactive UI framework
+
+**Updating vendored dependencies**:
+
+```bash
+# Update JavaScript dependencies
+task vendor
+```
+
+**Benefits**:
+- ✅ Protection against supply chain attacks (compromised CDNs, malicious package updates)
+- ✅ No runtime dependencies (self-contained binary)
+- ✅ Reproducible builds (dependencies locked to specific versions)
+- ✅ Offline execution (no internet connection required)
+- ✅ Faster builds (no external downloads)
 
 ### Available Commands
 

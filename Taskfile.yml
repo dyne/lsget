@@ -27,3 +27,51 @@ tasks:
   lsget:
     cmds:
       - go build -o lsget ./...
+  vendor:
+    desc: "Vendor JavaScript dependencies to reduce supply chain attacks"
+    cmds:
+      - mkdir -p vendor/js
+      - curl -fsSL "https://cdn.jsdelivr.net/npm/marked/marked.min.js" -o vendor/js/marked.min.js
+      - curl -fsSL "https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js" -o vendor/js/datastar.js
+      - echo "JavaScript dependencies vendored to ./vendor/js/"
+  docker-build:
+    desc: "Build Docker image locally for testing"
+    cmds:
+      - docker build --build-arg VERSION=dev-local -t lsget:local .
+      - echo "Docker image built successfully as lsget:local"
+  docker-run:
+    desc: "Run Docker container locally for testing"
+    deps: [docker-build]
+    cmds:
+      - mkdir -p files logs
+      - echo "Starting lsget container on http://localhost:8080"
+      - docker run --rm -it -p 8080:8080 -v $(pwd)/files:/data -v $(pwd)/logs:/logs -e LSGET_ADDR=0.0.0.0:8080 -e LSGET_DIR=/data -e LSGET_LOGFILE=/logs/access.log lsget:local
+  docker-test:
+    desc: "Build and test Docker image (version check)"
+    cmds:
+      - docker build --build-arg VERSION=dev-test -t lsget:test .
+      - docker run --rm lsget:test -version
+      - echo "✅ Docker image test passed"
+  docker-compose-up:
+    desc: "Start services with docker-compose"
+    cmds:
+      - mkdir -p files logs
+      - docker-compose up -d
+      - echo "Services started. Access at http://localhost:8080"
+      - echo "View logs with task docker-compose-logs"
+  docker-compose-down:
+    desc: "Stop services started with docker-compose"
+    cmds:
+      - docker-compose down
+      - echo "Services stopped"
+  docker-compose-logs:
+    desc: "View docker-compose logs"
+    cmds:
+      - docker-compose logs -f
+    interactive: true
+  docker-compose-rebuild:
+    desc: "Rebuild and restart docker-compose services"
+    cmds:
+      - docker-compose down
+      - docker-compose up -d --build
+      - echo "Services rebuilt and restarted"

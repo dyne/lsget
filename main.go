@@ -311,6 +311,12 @@ func readDocFile(dir string) (string, string) {
 //go:embed index.html
 var embeddedIndex []byte
 
+//go:embed vendor/js/marked.min.js
+var embeddedMarkedJS []byte
+
+//go:embed vendor/js/datastar.js
+var embeddedDatastarJS []byte
+
 // ===== Server state =====
 
 type session struct {
@@ -1071,6 +1077,20 @@ func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 
 	// Use the common serveFile function
 	s.serveFile(w, r, realPath, info)
+}
+
+// handleVendoredMarked serves the vendored marked.min.js library
+func (s *server) handleVendoredMarked(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=31536000") // Cache for 1 year
+	w.Write(embeddedMarkedJS)
+}
+
+// handleVendoredDatastar serves the vendored datastar.js library
+func (s *server) handleVendoredDatastar(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=31536000") // Cache for 1 year
+	w.Write(embeddedDatastarJS)
 }
 
 // processHTMLTemplate replaces placeholders in HTML with dynamic content
@@ -2968,6 +2988,9 @@ func main() {
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/static/", s.handleStaticFile)
 	mux.HandleFunc("/sitemap.xml", s.handleSitemap)
+	// Vendored JavaScript dependencies
+	mux.HandleFunc("/vendor/js/marked.min.js", s.handleVendoredMarked)
+	mux.HandleFunc("/vendor/js/datastar.js", s.handleVendoredDatastar)
 	mux.HandleFunc("/", s.handleIndex) // Catch-all route must be last
 
 	fmt.Printf("Serving %s on http://%s  (cat max = %d bytes)\n", rootAbs, *addr, *catMax)

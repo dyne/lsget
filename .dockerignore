@@ -30,9 +30,6 @@ docker-compose.yml
 Taskfile.yml
 air.toml
 
-# Dependencies
-vendor/
-
 # Test files
 *_test.go
 

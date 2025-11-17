@@ -2,7 +2,7 @@
 FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git ca-certificates
 
 WORKDIR /build
 
@@ -10,45 +10,43 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
+# Copy source code and vendored dependencies
 COPY . .
 
 # Build arguments
 ARG VERSION=dev
 
 # Build the application with version info
+# Static binary with embedded assets (vendor/ only used for JS, not Go)
 RUN CGO_ENABLED=0 GOOS=linux go build \
+    -mod=mod \
     -ldflags="-w -s -X main.version=${VERSION}" \
+    -a -installsuffix cgo \
     -o lsget .
 
-# Runtime stage
-FROM alpine:latest
+# Runtime stage - Distroless for maximum security
+# No shell, no package manager, minimal attack surface
+FROM gcr.io/distroless/static-debian12:nonroot
 
-# Install runtime dependencies (ca-certificates for HTTPS, curl for healthcheck)
-RUN apk --no-cache add ca-certificates curl
-
-WORKDIR /app
+# Copy CA certificates for HTTPS
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Copy binary from builder
-COPY --from=builder /build/lsget .
+COPY --from=builder /build/lsget /app/lsget
 
-# Create directories for serving files and logs
-RUN mkdir -p /data /logs
+# Distroless runs as nonroot user (UID 65532) by default
+# No need to create user or switch
 
 # Expose default port
 EXPOSE 8080
 
-# Run as non-root user
-RUN adduser -D -u 1000 lsget && \
-    chown -R lsget:lsget /app /data /logs
-USER lsget
-
 # Set volumes for data and logs
+# Note: Volumes must be writable by UID 65532 (nonroot user)
 VOLUME ["/data", "/logs"]
 
-# Run lsget - configuration via environment variables
-# Default env vars (can be overridden):
+# Run lsget directly - no entrypoint script needed
+# Configuration via environment variables:
 # LSGET_ADDR=0.0.0.0:8080
 # LSGET_DIR=/data
 # LSGET_LOGFILE=/logs/access.log
-CMD ["/app/lsget"]
+ENTRYPOINT ["/app/lsget"]
