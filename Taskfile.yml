@@ -30,10 +30,10 @@ tasks:
   vendor:
     desc: "Vendor JavaScript dependencies to reduce supply chain attacks"
     cmds:
-      - mkdir -p vendor/js
-      - curl -fsSL "https://cdn.jsdelivr.net/npm/marked/marked.min.js" -o vendor/js/marked.min.js
-      - curl -fsSL "https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js" -o vendor/js/datastar.js
-      - echo "JavaScript dependencies vendored to ./vendor/js/"
+      - mkdir -p assets/js
+      - curl -fsSL "https://cdn.jsdelivr.net/npm/marked/marked.min.js" -o assets/js/marked.min.js
+      - curl -fsSL "https://cdn.jsdelivr.net/gh/starfederation/datastar@main/bundles/datastar.js" -o assets/js/datastar.js
+      - echo "JavaScript dependencies vendored to ./assets/js/"
   docker-build:
     desc: "Build Docker image locally for testing"
     cmds:
@@ -44,7 +44,9 @@ tasks:
     deps: [docker-build]
     cmds:
       - mkdir -p files logs
+      - chmod 777 logs  # Container runs as UID 65532, needs write access
       - echo "Starting lsget container on http://localhost:8080"
+      - echo "Log file ./logs/access.log"
       - docker run --rm -it -p 8080:8080 -v $(pwd)/files:/data -v $(pwd)/logs:/logs -e LSGET_ADDR=0.0.0.0:8080 -e LSGET_DIR=/data -e LSGET_LOGFILE=/logs/access.log lsget:local
   docker-test:
     desc: "Build and test Docker image (version check)"
@@ -56,6 +58,7 @@ tasks:
     desc: "Start services with docker-compose"
     cmds:
       - mkdir -p files logs
+      - chmod 777 logs  # Container runs as UID 65532, needs write access
       - docker-compose up -d
       - echo "Services started. Access at http://localhost:8080"
       - echo "View logs with task docker-compose-logs"

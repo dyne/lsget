@@ -230,28 +230,34 @@ The Docker image uses **Google's Distroless base** for maximum security:
 
 **Permission Setup for Volumes:**
 
-Since the container runs as UID 65532 (`nonroot` user), mounted volumes must be writable:
+⚠️ **IMPORTANT**: Since the container runs as UID 65532 (`nonroot` user), mounted volumes **must be writable** for:
+- `/data` - Serving files (read access sufficient)
+- `/logs` - **Writing access logs** (required for `stats` command to work)
 
 ```bash
 # Create directories with proper permissions
 mkdir -p files logs
 
-# Option 1: World-writable (simple, less secure)
-chmod 777 files logs
+# Option 1: World-writable (simplest, works everywhere)
+chmod 777 logs
+chmod 755 files  # Read-only is fine for serving files
 
 # Option 2: Specific ownership (more secure)
 sudo chown -R 65532:65532 files logs
 
 # Option 3: Your user + group write (best for dev)
 sudo chown -R $(id -u):$(id -g) files logs
-chmod 775 files logs
+chmod 775 logs  # Needs write for access.log
+chmod 755 files
 ```
 
 **For Coolify/Platform Deployments:**
 
-Most platforms handle permissions automatically. If you encounter issues:
-- Coolify: Volume permissions are usually handled by the platform
-- Ensure the deployment user has write access to mount paths
+⚠️ If `stats` command shows "no activity logged yet":
+1. **Check volume permissions** - Logs directory must be writable by UID 65532
+2. **Coolify**: Volumes are usually auto-mounted, but check persistent storage settings
+3. **Manual fix**: SSH into the server and run `chmod 777 /path/to/mounted/logs`
+4. **Verify**: Check server logs for "Logging to: /logs/access.log" message on startup
 
 **Example 1: Simple setup (no baseurl needed):**
 

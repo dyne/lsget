@@ -2,6 +2,8 @@ services:
   lsget:
     build: .
     container_name: lsget
+    # IMPORTANT: Volumes must be writable by UID 65532 (nonroot user)
+    # Before first run: mkdir -p files logs && chmod 777 logs
     volumes:
       - ./files:/data
       - ./logs:/logs

@@ -311,10 +311,10 @@ func readDocFile(dir string) (string, string) {
 //go:embed index.html
 var embeddedIndex []byte
 
-//go:embed vendor/js/marked.min.js
+//go:embed assets/js/marked.min.js
 var embeddedMarkedJS []byte
 
-//go:embed vendor/js/datastar.js
+//go:embed assets/js/datastar.js
 var embeddedDatastarJS []byte
 
 // ===== Server state =====
@@ -599,15 +599,21 @@ func getClientIP(r *http.Request) string {
 }
 
 // logCommand writes a command execution to the log file
-func logCommand(cmd, filePath, ip string) {
-	if logFile == "" {
+func (s *server) logCommand(cmd, filePath, ip string) {
+	if s.logfile == "" {
 		return
 	}
 
 	logMutex.Lock()
 	defer logMutex.Unlock()
 
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// Ensure log directory exists
+	logDir := filepath.Dir(s.logfile)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return
+	}
+
+	f, err := os.OpenFile(s.logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
 	}
@@ -1439,13 +1445,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(files) == 1 {
 				// Single file, download directly
-				logCommand("get", files[0].virtualPath, ip)
+				s.logCommand("get", files[0].virtualPath, ip)
 				url := "/api/download?path=" + urlEscapeVirtual(files[0].virtualPath)
 				_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
 				return
 			}
 			// Multiple files, create zip
-			logCommand("get", "(pattern match)", ip)
+			s.logCommand("get", "(pattern match)", ip)
 			url := "/api/download?pattern=" + urlQueryEscape(pattern) + "&cwd=" + urlEscapeVirtual(sess.cwd)
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: url})
 			return
@@ -1476,14 +1482,14 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			dirName := filepath.Base(rp)
-			logCommand("get", vp+" (dir)", ip)
+			s.logCommand("get", vp+" (dir)", ip)
 			url := "/api/download?dir=" + urlEscapeVirtual(vp)
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading directory '%s' with %d files as %s.zip", dirName, len(files), dirName), Download: url})
 			return
 		}
 
 		// Single file download
-		logCommand("get", vp, ip)
+		s.logCommand("get", vp, ip)
 		url := "/api/download?path=" + urlEscapeVirtual(vp)
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: url})
 		return
@@ -1648,7 +1654,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Log the share command
-		logCommand(cmd, vp, getClientIP(r))
+		s.logCommand(cmd, vp, getClientIP(r))
 
 		// Return the URL with clipboard instruction
 		_ = json.NewEncoder(w).Encode(execResp{
@@ -1795,7 +1801,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		sha256Sum := hex.EncodeToString(sha256Hash.Sum(nil))
 
 		// Log the checksum command
-		logCommand(cmd, vp, getClientIP(r))
+		s.logCommand(cmd, vp, getClientIP(r))
 
 		output := fmt.Sprintf("MD5:    %s\nSHA256: %s", md5Sum, sha256Sum)
 		_ = json.NewEncoder(w).Encode(execResp{Output: output})
@@ -1809,7 +1815,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		stats, err := parseLogStats(s.logfile)
 		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("stats: error reading log file: %v", err)})
+			if os.IsNotExist(err) {
+				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("stats: no activity logged yet\nLog file: %s\nStatistics will be available once files are shared, downloaded, or checksummed.", s.logfile)})
+			} else {
+				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("stats: error reading log file: %v", err)})
+			}
 			return
 		}
 
@@ -2989,11 +2999,16 @@ func main() {
 	mux.HandleFunc("/api/static/", s.handleStaticFile)
 	mux.HandleFunc("/sitemap.xml", s.handleSitemap)
 	// Vendored JavaScript dependencies
-	mux.HandleFunc("/vendor/js/marked.min.js", s.handleVendoredMarked)
-	mux.HandleFunc("/vendor/js/datastar.js", s.handleVendoredDatastar)
+	mux.HandleFunc("/assets/js/marked.min.js", s.handleVendoredMarked)
+	mux.HandleFunc("/assets/js/datastar.js", s.handleVendoredDatastar)
 	mux.HandleFunc("/", s.handleIndex) // Catch-all route must be last
 
 	fmt.Printf("Serving %s on http://%s  (cat max = %d bytes)\n", rootAbs, *addr, *catMax)
+	if s.logfile != "" {
+		fmt.Printf("Logging to: %s\n", s.logfile)
+	} else {
+		fmt.Println("Logging disabled (use -logfile or LSGET_LOGFILE to enable)")
+	}
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           logRequests(mux),
@@ -3099,6 +3114,10 @@ func logRequests(next http.Handler) http.Handler {
 		// Write to log file if specified
 		if logFile != "" {
 			logMutex.Lock()
+			// Ensure log directory exists
+			if logDir := filepath.Dir(logFile); logDir != "" {
+				_ = os.MkdirAll(logDir, 0755)
+			}
 			f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err == nil {
 				_, _ = f.WriteString(logLine)

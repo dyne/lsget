@@ -2,3 +2,6 @@ lsget
 tmp
 .lsgetignore
 files
+logs
+build-errors.log
+access.log

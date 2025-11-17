@@ -93,7 +93,7 @@ docker-compose up
 ### Trade-offs
 - ❌ **No debugging** - Can't `docker exec` into container (no shell)
 - ❌ **No healthcheck command** - Platforms must use external health checks
-- ⚠️ **Permission setup** - Volumes must be writable by UID 65532
+- ⚠️ **Permission setup** - Volumes must be writable by UID 65532 (especially `/logs` for stats)
 
 ### Volumes
 - `/data` - Directory for serving files

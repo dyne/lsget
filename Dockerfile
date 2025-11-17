@@ -10,14 +10,14 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code and vendored dependencies
+# Copy source code and assets
 COPY . .
 
 # Build arguments
 ARG VERSION=dev
 
 # Build the application with version info
-# Static binary with embedded assets (vendor/ only used for JS, not Go)
+# Static binary with embedded assets (JS dependencies in assets/js/)
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -mod=mod \
     -ldflags="-w -s -X main.version=${VERSION}" \
