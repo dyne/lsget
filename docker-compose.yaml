@@ -6,8 +6,16 @@ services:
       - ./files:/data
       - ./logs:/logs
     restart: unless-stopped
-    command: ["-dir", "/data", "-addr", "0.0.0.0:8080", "-logfile", "/logs/access.log"]
     environment:
+      # Configuration via environment variables (with defaults)
+      - LSGET_ADDR=${LSGET_ADDR:-0.0.0.0:8080}
+      - LSGET_DIR=${LSGET_DIR:-/data}
+      - LSGET_LOGFILE=${LSGET_LOGFILE:-/logs/access.log}
+      - LSGET_CATMAX=${LSGET_CATMAX:-4096}
+      - LSGET_BASEURL=${LSGET_BASEURL:?SERVICE_URL_LSGET}
+      - LSGET_SITEMAP=${LSGET_SITEMAP:-0}
+      - LSGET_PID=${LSGET_PID:-}
+      # Optional: Service discovery
       - SERVICE_URL_LSGET_8080
     healthcheck:
       test:

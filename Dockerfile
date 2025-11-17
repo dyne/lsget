@@ -13,34 +13,42 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o lsget .
+# Build arguments
+ARG VERSION=dev
+
+# Build the application with version info
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.version=${VERSION}" \
+    -o lsget .
 
 # Runtime stage
 FROM alpine:latest
 
-# Install ca-certificates for HTTPS
-RUN apk --no-cache add ca-certificates
+# Install runtime dependencies (ca-certificates for HTTPS, curl for healthcheck)
+RUN apk --no-cache add ca-certificates curl
 
 WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/lsget .
 
-# Create directory for serving files
-RUN mkdir -p /data
+# Create directories for serving files and logs
+RUN mkdir -p /data /logs
 
 # Expose default port
 EXPOSE 8080
 
 # Run as non-root user
 RUN adduser -D -u 1000 lsget && \
-    chown -R lsget:lsget /app
+    chown -R lsget:lsget /app /data /logs
 USER lsget
 
-# Set default served directory
-VOLUME ["/data"]
+# Set volumes for data and logs
+VOLUME ["/data", "/logs"]
 
-# Default command serves /data on 0.0.0.0:8080
-ENTRYPOINT ["/app/lsget"]
-CMD ["-dir", "/data", "-addr", "0.0.0.0:8080"]
+# Run lsget - configuration via environment variables
+# Default env vars (can be overridden):
+# LSGET_ADDR=0.0.0.0:8080
+# LSGET_DIR=/data
+# LSGET_LOGFILE=/logs/access.log
+CMD ["/app/lsget"]

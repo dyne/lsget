@@ -324,7 +324,7 @@ type server struct {
 	sessions map[string]*session
 	mu       sync.RWMutex
 	logfile  string // path to log file for statistics
-	baseURL  string // base URL for the site (e.g., https://files.example.com)
+	baseURL  string // optional: public base URL (e.g., https://files.example.com) - auto-detects from request if empty
 }
 
 func newServer(rootAbs string, catMax int64, logfile, baseURL string) *server {
@@ -1611,9 +1611,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		var fileURL string
 		if s.baseURL != "" {
 			// Use configured base URL (clean, no /api/static)
+			// Required when behind reverse proxy with different public URL
 			fileURL = s.baseURL + vp
 		} else {
-			// Fallback to request-based URL
+			// Auto-detect from request (works for most cases)
+			// Uses Host header and X-Forwarded-Proto for protocol detection
 			host := r.Host
 			if host == "" {
 				host = "localhost:8080"
@@ -2871,7 +2873,7 @@ func main() {
 		catMax          = flag.Int64("catmax", getEnvOrDefaultInt64("LSGET_CATMAX", 4*1024), "max bytes printable via `cat` and used by completion (env: LSGET_CATMAX)")
 		pidFileFlag     = flag.String("pid", getEnvOrDefault("LSGET_PID", ""), "path to PID file (env: LSGET_PID)")
 		logfileFlag     = flag.String("logfile", getEnvOrDefault("LSGET_LOGFILE", ""), "path to log file for statistics (env: LSGET_LOGFILE)")
-		baseURL         = flag.String("baseurl", getEnvOrDefault("LSGET_BASEURL", ""), "base URL for the site (e.g., https://files.example.com) (env: LSGET_BASEURL)")
+		baseURL         = flag.String("baseurl", getEnvOrDefault("LSGET_BASEURL", ""), "base URL for the site - full URL without trailing slash (e.g., https://files.example.com) (env: LSGET_BASEURL)")
 		sitemapInterval = flag.Int("sitemap", getEnvOrDefaultInt("LSGET_SITEMAP", 0), "generate sitemap.xml every N minutes (0 = disabled) (env: LSGET_SITEMAP)")
 	)
 	flag.Parse()

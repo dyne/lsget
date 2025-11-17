@@ -61,13 +61,47 @@ Perfect for:
 
 ***
 ## 💾 Install
+
+### Binary Installation
 Single binary, no need to install anything!
 
 ```bash
-# Download
+# Download latest release
 curl -fsSL  "https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname -s)-$(uname -m)" -o lsget && chmod +x lsget
 ```
 
+### Docker
+
+Pull the latest Docker image from GitHub Container Registry:
+
+```bash
+# Pull latest version
+docker pull ghcr.io/dyne/lsget:latest
+
+# Or pull a specific version
+docker pull ghcr.io/dyne/lsget:v1.0.0
+
+# Run with Docker
+docker run -d \
+  -p 8080:8080 \
+  -v $(pwd)/files:/data \
+  -v $(pwd)/logs:/logs \
+  -e LSGET_ADDR=0.0.0.0:8080 \
+  -e LSGET_LOGFILE=/logs/access.log \
+  ghcr.io/dyne/lsget:latest
+```
+
+### Docker Compose
+
+Use the included `docker-compose.yaml`:
+
+```bash
+# Start the service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+```
 
 **[🔝 back to top](#toc)**
 
@@ -110,13 +144,38 @@ All configuration flags can also be set via environment variables with the `LSGE
 
 | Environment Variable | Flag Equivalent | Description | Example |
 |---------------------|-----------------|-------------|---------|
-| `LSGET_ADDR` | `-addr` | Address to listen on | `LSGET_ADDR=0.0.0.0:8080` |
+| `LSGET_ADDR` | `-addr` | Address to listen on (bind address) | `LSGET_ADDR=0.0.0.0:8080` |
 | `LSGET_DIR` | `-dir` | Directory to expose as root | `LSGET_DIR=/var/www/files` |
 | `LSGET_CATMAX` | `-catmax` | Max bytes for cat command | `LSGET_CATMAX=8192` |
 | `LSGET_PID` | `-pid` | Path to PID file | `LSGET_PID=/var/run/lsget.pid` |
 | `LSGET_LOGFILE` | `-logfile` | Path to log file for statistics | `LSGET_LOGFILE=/var/log/lsget.log` |
-| `LSGET_BASEURL` | `-baseurl` | Base URL for the site | `LSGET_BASEURL=https://files.example.com` |
+| `LSGET_BASEURL` | `-baseurl` | **Optional:** Public URL (see below) | `LSGET_BASEURL=https://files.example.com` |
 | `LSGET_SITEMAP` | `-sitemap` | Sitemap generation interval (minutes) | `LSGET_SITEMAP=60` |
+
+#### About LSGET_ADDR vs LSGET_BASEURL
+
+These serve different purposes and are kept separate for flexibility:
+
+**`LSGET_ADDR`** (required) - Where the server **binds/listens**
+- Network-layer configuration
+- Examples: `0.0.0.0:8080`, `localhost:8080`, `127.0.0.1:3000`
+
+**`LSGET_BASEURL`** (optional) - What URL users **access publicly**
+- Application-layer configuration
+- Full URL with protocol, no trailing slash
+- Examples: `https://files.example.com`, `https://cdn.company.com`
+
+**When you DON'T need `LSGET_BASEURL`** (auto-detection works):
+- ✅ Running locally for development
+- ✅ Direct access to the server without reverse proxy
+- ✅ Using localhost or direct IP access
+- Auto-detects from request headers (`Host`, `X-Forwarded-Proto`)
+
+**When you DO need `LSGET_BASEURL`**:
+- 🔧 Behind reverse proxy (Nginx, Caddy, Traefik) with different public URL
+- 🔧 Docker with port mapping to a different domain
+- 🔧 Generating sitemap.xml with specific canonical URLs
+- 🔧 Using `url`/`share` commands for consistent shareable links
 
 **Example usage with environment variables:**
 
@@ -134,6 +193,72 @@ docker run -e LSGET_ADDR=0.0.0.0:8080 -e LSGET_DIR=/data lsget
 ```
 
 **Priority order:** Command-line flags > Environment variables > Default values
+
+### Docker Compose
+
+The included `docker-compose.yaml` uses environment variables with sensible defaults. You can customize the configuration by creating a `.env` file:
+
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit with your preferences
+nano .env
+
+# Start the service
+docker-compose up -d
+```
+
+**Default configuration:**
+- **Address**: `0.0.0.0:8080` (accessible from outside container)
+- **Directory**: `/data` (mapped to `./files` on host)
+- **Log file**: `/logs/access.log` (mapped to `./logs` on host)
+- **Port mapping**: `8080:8080` (customizable via `LSGET_PORT` env var)
+
+**Example 1: Simple setup (no baseurl needed):**
+
+```bash
+# Basic configuration - baseurl auto-detects
+LSGET_PORT=8080
+LSGET_CATMAX=262144
+# LSGET_BASEURL is empty - auto-detection works fine!
+```
+
+**Example 2: Behind reverse proxy (baseurl needed):**
+
+```bash
+# When lsget runs on http://localhost:8080
+# But users access via https://files.example.com
+LSGET_ADDR=127.0.0.1:8080
+LSGET_BASEURL=https://files.example.com
+LSGET_SITEMAP=60
+```
+
+**Example 3: Docker with custom domain:**
+
+```bash
+# Container binds to 0.0.0.0:8080
+# But accessed via custom domain
+LSGET_PORT=8080
+LSGET_BASEURL=https://cdn.mycompany.com
+LSGET_LOGFILE=/logs/access.log
+```
+
+**Docker Compose commands:**
+
+```bash
+# Start in background
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop service
+docker-compose down
+
+# Rebuild and start
+docker-compose up -d --build
+```
 
 ### Available Commands
 
