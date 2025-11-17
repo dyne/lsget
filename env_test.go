@@ -23,8 +23,14 @@ func TestEnvironmentVariables(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment variable
-			os.Setenv(tt.envKey, tt.envValue)
-			defer os.Unsetenv(tt.envKey)
+			if err := os.Setenv(tt.envKey, tt.envValue); err != nil {
+				t.Fatalf("Failed to set env var: %v", err)
+			}
+			defer func() {
+				if err := os.Unsetenv(tt.envKey); err != nil {
+					t.Errorf("Failed to unset env var: %v", err)
+				}
+			}()
 
 			// Test string env vars
 			getEnvOrDefault := func(key, defaultValue string) string {
@@ -58,8 +64,14 @@ func TestEnvironmentVariablesInt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment variable
-			os.Setenv(tt.envKey, tt.envValue)
-			defer os.Unsetenv(tt.envKey)
+			if err := os.Setenv(tt.envKey, tt.envValue); err != nil {
+				t.Fatalf("Failed to set env var: %v", err)
+			}
+			defer func() {
+				if err := os.Unsetenv(tt.envKey); err != nil {
+					t.Errorf("Failed to unset env var: %v", err)
+				}
+			}()
 
 			// Test int env vars
 			getEnvOrDefaultInt := func(key string, defaultValue int) int {
@@ -95,8 +107,14 @@ func TestEnvironmentVariablesInt64(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment variable
-			os.Setenv(tt.envKey, tt.envValue)
-			defer os.Unsetenv(tt.envKey)
+			if err := os.Setenv(tt.envKey, tt.envValue); err != nil {
+				t.Fatalf("Failed to set env var: %v", err)
+			}
+			defer func() {
+				if err := os.Unsetenv(tt.envKey); err != nil {
+					t.Errorf("Failed to unset env var: %v", err)
+				}
+			}()
 
 			// Test int64 env vars
 			getEnvOrDefaultInt64 := func(key string, defaultValue int64) int64 {

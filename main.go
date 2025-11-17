@@ -477,13 +477,14 @@ func (s *server) generateSitemap() error {
 		if !info.IsDir() {
 			entry.fileSize = info.Size()
 			category := getFileCategory(filepath.Base(path))
-			if category == FileCategoryImage {
+			switch category {
+			case FileCategoryImage:
 				entry.isImage = true
 				entry.imageURL = s.baseURL + vp
-			} else if category == FileCategoryVideo {
+			case FileCategoryVideo:
 				entry.isVideo = true
 				entry.videoURL = s.baseURL + vp
-			} else if category == FileCategoryDocument {
+			case FileCategoryDocument:
 				entry.isDocument = true
 			}
 		}
@@ -1089,14 +1090,14 @@ func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleVendoredMarked(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=31536000") // Cache for 1 year
-	w.Write(embeddedMarkedJS)
+	_, _ = w.Write(embeddedMarkedJS)
 }
 
 // handleVendoredDatastar serves the vendored datastar.js library
 func (s *server) handleVendoredDatastar(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=31536000") // Cache for 1 year
-	w.Write(embeddedDatastarJS)
+	_, _ = w.Write(embeddedDatastarJS)
 }
 
 // processHTMLTemplate replaces placeholders in HTML with dynamic content
@@ -2843,7 +2844,7 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 				if req.TextOnly {
 					// Use file category to check if viewable (text or image)
 					cat := getFileCategory(name)
-					if !(cat == FileCategoryText || cat == FileCategoryImage) {
+					if cat != FileCategoryText && cat != FileCategoryImage {
 						continue
 					}
 				}
