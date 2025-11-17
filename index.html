@@ -885,9 +885,11 @@
 
                if (lcp && lcp !== basePart) {
                  $current = cmd + ' ' + flagsPart + (dirPart + lcp);
+                 $cursorPos = $current.length; // Fix cursor position
                } else if (items.length === 1) {
                  const one = items[0];
                  $current = cmd + ' ' + flagsPart + (dirPart + one.name + (one.dir ? '/' : ''));
+                 $cursorPos = $current.length; // Fix cursor position
                } else {
                  const list = items.map(it => it.name + (it.dir ? '/' : '')).join('  ');
                  $buffer += `<div class='line out'>${makeClickable(ansiToHtml(list))}</div>`;

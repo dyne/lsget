@@ -2812,8 +2812,8 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 				}
 				if req.TextOnly {
 					// Use file category to check if viewable (text or image)
-          cat := getFileCategory(name)
-          if !(cat == FileCategoryText || cat == FileCategoryImage) {
+					cat := getFileCategory(name)
+					if !(cat == FileCategoryText || cat == FileCategoryImage) {
 						continue
 					}
 				}
