@@ -14,11 +14,10 @@ services:
       - LSGET_DIR=${LSGET_DIR:-/data}
       - LSGET_LOGFILE=${LSGET_LOGFILE:-/logs/access.log}
       - LSGET_CATMAX=${LSGET_CATMAX:-4096}
-      - LSGET_BASEURL=${LSGET_BASEURL:-${SERVICE_URL_LSGET:-}}
+      - LSGET_BASEURL=${SERVICE_URL_LSGET}
       - LSGET_SITEMAP=${LSGET_SITEMAP:-0}
       - LSGET_PID=${LSGET_PID:-}
       # Optional: Service discovery
-      - SERVICE_URL_LSGET_8080
     # Note: Healthcheck removed for distroless compatibility (no shell/curl)
     # Platforms like Coolify, Kubernetes, etc. should use external health checks
     # Example external check: curl http://localhost:8080/
