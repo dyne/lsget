@@ -10,6 +10,7 @@ services:
     restart: unless-stopped
     environment:
       # Configuration via environment variables (with defaults)
+      - SERVICE_URL_LSGET
       - LSGET_ADDR=${LSGET_ADDR:-0.0.0.0:8080}
       - LSGET_DIR=${LSGET_DIR:-/data}
       - LSGET_LOGFILE=${LSGET_LOGFILE:-/logs/access.log}
