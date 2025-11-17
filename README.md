@@ -104,6 +104,37 @@ Usage of ./lsget:
         Print the version of this software and exits
 ```
 
+### Environment Variables
+
+All configuration flags can also be set via environment variables with the `LSGET_` prefix. Environment variables are used as defaults and can be overridden by command-line flags.
+
+| Environment Variable | Flag Equivalent | Description | Example |
+|---------------------|-----------------|-------------|---------|
+| `LSGET_ADDR` | `-addr` | Address to listen on | `LSGET_ADDR=0.0.0.0:8080` |
+| `LSGET_DIR` | `-dir` | Directory to expose as root | `LSGET_DIR=/var/www/files` |
+| `LSGET_CATMAX` | `-catmax` | Max bytes for cat command | `LSGET_CATMAX=8192` |
+| `LSGET_PID` | `-pid` | Path to PID file | `LSGET_PID=/var/run/lsget.pid` |
+| `LSGET_LOGFILE` | `-logfile` | Path to log file for statistics | `LSGET_LOGFILE=/var/log/lsget.log` |
+| `LSGET_BASEURL` | `-baseurl` | Base URL for the site | `LSGET_BASEURL=https://files.example.com` |
+| `LSGET_SITEMAP` | `-sitemap` | Sitemap generation interval (minutes) | `LSGET_SITEMAP=60` |
+
+**Example usage with environment variables:**
+
+```bash
+# Set environment variables
+export LSGET_ADDR="0.0.0.0:8080"
+export LSGET_DIR="/var/www/files"
+export LSGET_LOGFILE="/var/log/lsget.log"
+
+# Run lsget (uses env vars)
+./lsget
+
+# Or use with Docker
+docker run -e LSGET_ADDR=0.0.0.0:8080 -e LSGET_DIR=/data lsget
+```
+
+**Priority order:** Command-line flags > Environment variables > Default values
+
 ### Available Commands
 
 Once you open lsget in your browser, you can use the following Unix-like commands in the TUI:
@@ -123,41 +154,63 @@ Available commands:
 ```
 #### Navigation & File Listing
 
-| Command | Aliases | Usage | Description |
-|---------|---------|-------|-------------|
-| `pwd` | - | `pwd` | Print the current working directory |
-| `cd` | - | `cd [DIR]` | Change directory. Use `..` for parent, or path relative to current dir |
-| `ls` | `dir` | `ls [-l] [-h]` | List files and directories<br>`-l` Long format with permissions and size<br>`-h` Human-readable file sizes (KB, MB, GB) |
-| `tree` | - | `tree [-L<N>] [-a] [PATH]` | Display directory structure as a tree<br>`-L<N>` Limit depth to N levels (e.g., `-L2`)<br>`-a` Show hidden files (starting with `.`) |
+**`pwd`**
+Print the current working directory.
+
+**`cd [DIR]`**
+Change directory. Use `..` for parent directory, or provide a path relative to current directory.
+
+**`ls [-l] [-h]`** (alias: `dir`)
+List files and directories in the current location.
+- `-l` — Long format showing permissions, size, and modification time
+- `-h` — Human-readable file sizes (KB, MB, GB)
+
+**`tree [-L<N>] [-a] [PATH]`**
+Display directory structure as a tree.
+- `-L<N>` — Limit depth to N levels (e.g., `-L2` for 2 levels deep)
+- `-a` — Show hidden files (files starting with `.`)
 
 #### File Operations
 
-| Command | Aliases | Usage | Description |
-|---------|---------|-------|-------------|
-| `cat` | - | `cat FILE` | Display contents of a text file<br>For images: displays the image inline |
-| `get` | `rget`, `wget`, `download` | `get FILE\|PATTERN` | Download a file or multiple files<br>Supports wildcards (e.g., `*.txt`)<br>Multiple files are zipped automatically |
-| `url` | `share` | `url FILE` | Generate a shareable URL for a file<br>Copies the URL to your clipboard |
-| `sum` | `checksum` | `sum FILE` | Calculate and display MD5 and SHA256 checksums |
+**`cat FILE`**
+Display contents of a text file. For images, displays the image inline in the browser.
+
+**`get FILE|PATTERN`** (aliases: `rget`, `wget`, `download`)
+Download a file or multiple files. Supports wildcards like `*.txt` or `*.pdf`. When downloading multiple files, they are automatically packaged as a zip archive.
+
+**`url FILE`** (alias: `share`)
+Generate a shareable URL for a file. The URL is automatically copied to your clipboard.
+
+**`sum FILE`** (alias: `checksum`)
+Calculate and display MD5 and SHA256 checksums for a file.
 
 #### Search & Discovery
 
-| Command | Aliases | Usage | Description |
-|---------|---------|-------|-------------|
-| `find` | - | `find [PATH] [-name PATTERN] [-type f\|d]` | Search for files and directories<br>`-name` Match by name pattern (e.g., `*.go`)<br>`-type f` Find only files<br>`-type d` Find only directories |
-| `grep` | - | `grep [-r] [-i] [-n] PATTERN [FILE...]` | Search for text patterns in files<br>`-r` Recursive search in directories<br>`-i` Case-insensitive search<br>`-n` Show line numbers |
+**`find [PATH] [-name PATTERN] [-type f|d]`**
+Search for files and directories.
+- `-name PATTERN` — Match by name pattern (e.g., `*.go`, `test*`)
+- `-type f` — Find only files
+- `-type d` — Find only directories
+
+**`grep [-r] [-i] [-n] PATTERN [FILE...]`**
+Search for text patterns in files.
+- `-r` — Recursive search through directories
+- `-i` — Case-insensitive search
+- `-n` — Show line numbers in results
 
 #### Statistics & Help
 
-| Command | Aliases | Usage | Description |
-|---------|---------|-------|-------------|
-| `stats` | - | `stats` | Display access statistics (requires `-logfile` flag)<br>Shows share counts, downloads, and checksums per file |
-| `help` | - | `help` | Display the list of available commands |
+**`stats`**
+Display access statistics showing file shares, downloads, and checksum operations. Requires the `-logfile` flag to be set when starting lsget.
+
+**`help`**
+Display the list of available commands.
 
 #### Special Features
 
-- **Tab completion**: Press `Tab` to autocomplete file and directory names
-- **Command history**: Use `↑` and `↓` arrow keys to navigate through previous commands
-- **Session isolation**: Each browser maintains its own current working directory via cookies
+- **Tab completion** — Press `Tab` to autocomplete file and directory names
+- **Command history** — Use `↑` and `↓` arrow keys to navigate through previous commands
+- **Session isolation** — Each browser maintains its own current working directory via cookies
 
 
 **[🔝 back to top](#toc)**

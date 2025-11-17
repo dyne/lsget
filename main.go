@@ -2838,15 +2838,41 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 // ===== Main =====
 
 func main() {
+	// Environment variable helper functions
+	getEnvOrDefault := func(key, defaultValue string) string {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+		return defaultValue
+	}
+	getEnvOrDefaultInt64 := func(key string, defaultValue int64) int64 {
+		if v := os.Getenv(key); v != "" {
+			if i, err := fmt.Sscanf(v, "%d", &defaultValue); i == 1 && err == nil {
+				return defaultValue
+			}
+		}
+		return defaultValue
+	}
+	getEnvOrDefaultInt := func(key string, defaultValue int) int {
+		if v := os.Getenv(key); v != "" {
+			var result int
+			if i, err := fmt.Sscanf(v, "%d", &result); i == 1 && err == nil {
+				return result
+			}
+		}
+		return defaultValue
+	}
+
+	// Define flags with environment variable support (LSGET_* prefix)
 	var (
 		printVersion    = flag.Bool("version", false, "Print the version of this software and exits")
-		addr            = flag.String("addr", "localhost:8080", "address to listen on")
-		dir             = flag.String("dir", ".", "directory to expose as root")
-		catMax          = flag.Int64("catmax", 4*1024, "max bytes printable via `cat` and used by completion")
-		pidFileFlag     = flag.String("pid", "", "path to PID file")
-		logfileFlag     = flag.String("logfile", "", "path to log file for statistics")
-		baseURL         = flag.String("baseurl", "", "base URL for the site (e.g., https://files.example.com)")
-		sitemapInterval = flag.Int("sitemap", 0, "generate sitemap.xml every N minutes (0 = disabled)")
+		addr            = flag.String("addr", getEnvOrDefault("LSGET_ADDR", "localhost:8080"), "address to listen on (env: LSGET_ADDR)")
+		dir             = flag.String("dir", getEnvOrDefault("LSGET_DIR", "."), "directory to expose as root (env: LSGET_DIR)")
+		catMax          = flag.Int64("catmax", getEnvOrDefaultInt64("LSGET_CATMAX", 4*1024), "max bytes printable via `cat` and used by completion (env: LSGET_CATMAX)")
+		pidFileFlag     = flag.String("pid", getEnvOrDefault("LSGET_PID", ""), "path to PID file (env: LSGET_PID)")
+		logfileFlag     = flag.String("logfile", getEnvOrDefault("LSGET_LOGFILE", ""), "path to log file for statistics (env: LSGET_LOGFILE)")
+		baseURL         = flag.String("baseurl", getEnvOrDefault("LSGET_BASEURL", ""), "base URL for the site (e.g., https://files.example.com) (env: LSGET_BASEURL)")
+		sitemapInterval = flag.Int("sitemap", getEnvOrDefaultInt("LSGET_SITEMAP", 0), "generate sitemap.xml every N minutes (0 = disabled) (env: LSGET_SITEMAP)")
 	)
 	flag.Parse()
 
