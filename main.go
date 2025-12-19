@@ -2600,7 +2600,7 @@ func main() {
 	s := newServer(rootAbs, *catMax, *logfileFlag, *baseURL)
 
 	// Special case: if sitemap is 0 and baseURL is set, generate once and exit
-	if *baseURL != "" {
+	if *sitemapInterval != 0 && *baseURL != "" {
 		fmt.Println("=== Generating sitemap (debug mode) ===")
 		fmt.Printf("Base URL: %s\n", *baseURL)
 		fmt.Printf("Root directory: %s\n", rootAbs)
