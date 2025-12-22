@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandleConfig_ReadmeAndPath(t *testing.T) {
@@ -54,6 +55,29 @@ func TestHandleConfig_ReadmeAndPath(t *testing.T) {
 	}
 	if resp2.CWD != "/sub" {
 		t.Fatalf("cwd not updated: %q", resp2.CWD)
+	}
+}
+
+func TestHandleHealth(t *testing.T) {
+	s := newTestServer(t)
+	r := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	w := httptest.NewRecorder()
+	s.handleHealth(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health status: %d", w.Code)
+	}
+	var resp healthResp
+	if err := json.NewDecoder(w.Result().Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("health status field: %q", resp.Status)
+	}
+	if resp.Version == "" {
+		t.Fatalf("health version empty")
+	}
+	if _, err := time.Parse(time.RFC3339, resp.Time); err != nil {
+		t.Fatalf("health time: %v", err)
 	}
 }
 
@@ -380,12 +404,12 @@ func TestNoJSHTMLEscaping(t *testing.T) {
 		isDir    bool
 		expected string // what should NOT appear in the output (unescaped)
 	}{
-		{`test"file.txt`, false, `href="/test"file.txt"`},      // quote should be escaped
-		{`test'file.txt`, false, `href="/test'file.txt"`},      // apostrophe should be escaped
-		{`test<file.txt`, false, `href="/test<file.txt"`},      // angle bracket should be escaped
-		{`test>file.txt`, false, `href="/test>file.txt"`},      // angle bracket should be escaped
-		{`test&file.txt`, false, `href="/test&file.txt"`},      // ampersand should be escaped (but URL-escaped)
-		{`test"dir`, true, `href="/test"dir?nojs=1"`},          // quote in directory name
+		{`test"file.txt`, false, `href="/test"file.txt"`}, // quote should be escaped
+		{`test'file.txt`, false, `href="/test'file.txt"`}, // apostrophe should be escaped
+		{`test<file.txt`, false, `href="/test<file.txt"`}, // angle bracket should be escaped
+		{`test>file.txt`, false, `href="/test>file.txt"`}, // angle bracket should be escaped
+		{`test&file.txt`, false, `href="/test&file.txt"`}, // ampersand should be escaped (but URL-escaped)
+		{`test"dir`, true, `href="/test"dir?nojs=1"`},     // quote in directory name
 	}
 
 	for _, tc := range testCases {

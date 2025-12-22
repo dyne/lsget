@@ -19,9 +19,10 @@ services:
       - LSGET_SITEMAP=${LSGET_SITEMAP:-0}
       - LSGET_PID=${LSGET_PID:-}
       # Optional: Service discovery
-    # Note: Healthcheck removed for distroless compatibility (no shell/curl)
-    # Platforms like Coolify, Kubernetes, etc. should use external health checks
-    # Example external check: curl http://localhost:8080/
-    # healthcheck:
-    #   disable: true
+    healthcheck:
+      test: ["CMD", "/app/lsget", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 

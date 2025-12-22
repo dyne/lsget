@@ -18,6 +18,7 @@ import (
 	"html/template"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -431,15 +432,15 @@ func (s *server) shouldIgnore(realPath, name string) bool {
 
 // sitemapEntry represents an entry in the sitemap
 type sitemapEntry struct {
-	loc         string
-	lastmod     string
-	isImage     bool
-	imageURL    string
-	isVideo     bool
-	videoURL    string
-	isDocument  bool
-	isDir       bool
-	fileSize    int64
+	loc        string
+	lastmod    string
+	isImage    bool
+	imageURL   string
+	isVideo    bool
+	videoURL   string
+	isDocument bool
+	isDir      bool
+	fileSize   int64
 }
 
 // generateSitemap creates a sitemap.xml file in the root directory
@@ -712,14 +713,14 @@ func (s *server) realFromVirtual(v string) (string, error) {
 }
 
 func (s *server) virtualFromReal(realPath string) (string, error) {
-rel, err := filepath.Rel(s.rootAbs, realPath)
-if err != nil {
-return "", err
-}
-if rel == "." {
-return "/", nil
-}
-return "/" + filepath.ToSlash(rel), nil
+	rel, err := filepath.Rel(s.rootAbs, realPath)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." {
+		return "/", nil
+	}
+	return "/" + filepath.ToSlash(rel), nil
 }
 
 // simple args parser: supports quotes ("", ”) and backslash escapes inside quotes
@@ -869,6 +870,12 @@ type configResp struct {
 	CWD     string  `json:"cwd,omitempty"`
 }
 
+type healthResp struct {
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	Time    string `json:"time"`
+}
+
 // ===== Handlers =====
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -883,7 +890,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			s.serveFile(w, r, indexPath, indexInfo)
 			return
 		}
-		
+
 		// No index.html, serve lsget interface or no-JS fallback
 		if noJS {
 			s.serveNoJSDirectory(w, r, "/")
@@ -926,7 +933,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			s.serveFile(w, r, indexPath, indexInfo)
 			return
 		}
-		
+
 		// It's a directory without index.html
 		if noJS {
 			s.serveNoJSDirectory(w, r, requestPath)
@@ -1167,6 +1174,15 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, sitemapPath)
 }
 
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(healthResp{Status: "ok", Version: version, Time: time.Now().UTC().Format(time.RFC3339)})
+}
+
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
 
@@ -1359,7 +1375,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.cwd = newV
-		
+
 		// Check if directory contains index.html
 		indexPath := filepath.Join(newReal, "index.html")
 		if _, err := os.Stat(indexPath); err == nil {
@@ -1367,7 +1383,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Redirect: newV})
 			return
 		}
-		
+
 		readme, docType := readDocFile(newReal)
 		// Include the new CWD in the response so client can update URL
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme, DocType: docType})
@@ -2506,7 +2522,7 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 				}
 				// Use file category to check if viewable
 				cat := getFileCategory(name)
-				
+
 				// Images are always included regardless of size limits
 				if cat == FileCategoryImage {
 					// Skip other filters for images
@@ -2541,6 +2557,44 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 // ===== Main =====
 
+func healthcheckURLFromAddr(addr, path string) (string, error) {
+	if path == "" {
+		path = "/api/health"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	return "http://127.0.0.1:" + port + path, nil
+}
+
+func runHealthcheck(addr, path string) error {
+	u, err := healthcheckURLFromAddr(addr, path)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unhealthy: %s", resp.Status)
+	}
+	return nil
+}
+
 func main() {
 	// Environment variable helper functions
 	getEnvOrDefault := func(key, defaultValue string) string {
@@ -2570,6 +2624,8 @@ func main() {
 	// Define flags with environment variable support (LSGET_* prefix)
 	var (
 		printVersion    = flag.Bool("version", false, "Print the version of this software and exits")
+		healthcheck     = flag.Bool("healthcheck", false, "Perform a local HTTP healthcheck and exit (for containers)")
+		healthcheckPath = flag.String("healthcheck-path", getEnvOrDefault("LSGET_HEALTHCHECK_PATH", "/api/health"), "healthcheck path (env: LSGET_HEALTHCHECK_PATH)")
 		addr            = flag.String("addr", getEnvOrDefault("LSGET_ADDR", "localhost:8080"), "address to listen on (env: LSGET_ADDR)")
 		dir             = flag.String("dir", getEnvOrDefault("LSGET_DIR", "."), "directory to expose as root (env: LSGET_DIR)")
 		catMax          = flag.Int64("catmax", getEnvOrDefaultInt64("LSGET_CATMAX", 4*1024), "max bytes printable via `cat` and used by completion (env: LSGET_CATMAX)")
@@ -2589,6 +2645,14 @@ func main() {
 		fmt.Println()
 		fmt.Println("Repository: https://github.com/dyne/lsget")
 		fmt.Println("Website:    https://dyne.org")
+		exitFunc(0)
+	}
+
+	if *healthcheck {
+		if err := runHealthcheck(*addr, *healthcheckPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			exitFunc(1)
+		}
 		exitFunc(0)
 	}
 
@@ -2664,6 +2728,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/exec", s.handleExec)
 	mux.HandleFunc("/api/complete", s.handleComplete)
