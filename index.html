@@ -699,17 +699,19 @@
   <body>
     <div
       class="layout"
+      data-initial-path="{{INITIAL_PATH}}"
       data-signals='{ "ps1": "guest@browser:/$ ", "cwd": "/", "current": "", "cursorPos": 0, "buffer": "{{HELP_MESSAGE}}", "history": [], "histIndex": 0, "readme": "", "showReadme": false }'
       data-on-load="
-        // Initialize path from URL
-        const initialPath = '{{INITIAL_PATH}}';
+        // Initialize path from server-rendered attribute
+        const initialPath = el.getAttribute('data-initial-path') || '/';
         if (initialPath && initialPath !== '/') {
           $cwd = initialPath;
           $ps1 = `guest@browser:${initialPath}$ `;
         }
 
-        // Update browser history state
-        window.history.replaceState({ cwd: $cwd }, '', $cwd === '/' ? '/' : $cwd);
+        // Update browser history state with sanitized path
+        const historyPath = (initialPath && initialPath.startsWith('/')) ? initialPath : '/';
+        window.history.replaceState({ cwd: historyPath }, '', historyPath === '/' ? '/' : historyPath);
 
         // Handle browser back/forward buttons
         window.addEventListener('popstate', (e) => {
@@ -782,7 +784,7 @@
          const k=evt.key;
          if (k==='Enter') {
            const cmd = $current;
-           $buffer += `<div class='line'><span class='ps1'>${$ps1}</span>${escapeHTML(cmd)}</div>`;
+           $buffer += `<div class='line'><span class='ps1'>${escapeHTML($ps1)}</span>${escapeHTML(cmd)}</div>`;
            if (cmd) { $history.push(cmd); }
            $histIndex = $history.length;
            $current = '';
@@ -796,7 +798,7 @@
            })
            .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
              .then((res) => {
-               const { output, download, cwd, clipboard, html } = res || {};
+               const { output, download, cwd, clipboard, html, redirect } = res || {};
              if (typeof output === 'string' && output.length) {
                $buffer += `<div class='line out'>${makeClickable(ansiToHtml(output))}</div>`;
              }
@@ -810,13 +812,18 @@
                   console.error('Failed to copy to clipboard:', err);
                 });
               }
+              if (typeof redirect === 'string' && redirect.startsWith('/')) {
+                // Redirect to the specified path (validated as same-origin relative path)
+                window.location.href = redirect;
+                return;
+              }
                if (cwd !== undefined) {
                   $cwd = cwd;
                   $ps1 = `guest@browser:${cwd}$ `;
                   // Update URL and browser history when directory changes
-                  const newPath = cwd === '/' ? '/' : cwd;
+                  const newPath = (typeof cwd === 'string' && cwd.startsWith('/')) ? cwd : '/';
                   if (window.location.pathname !== newPath) {
-                    window.history.pushState({ cwd: cwd }, '', newPath);
+                    window.history.pushState({ cwd: newPath }, '', newPath === '/' ? '/' : newPath);
                   }
                }
                if (res && Object.prototype.hasOwnProperty.call(res, 'readme')) {
@@ -1004,7 +1011,7 @@
             const before = $current.slice(0, $cursorPos);
             const cursorChar = $current[$cursorPos] || ' ';
             const after = $current.slice($cursorPos + 1);
-            el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${$ps1}</span><span class='input-before'></span><span class='cursor'></span><span class='input-after'></span></div>`;
+            el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${escapeHTML($ps1)}</span><span class='input-before'></span><span class='cursor'></span><span class='input-after'></span></div>`;
             el.querySelector('.input-before').textContent = before;
             el.querySelector('.cursor').textContent = cursorChar;
             el.querySelector('.input-after').textContent = after;

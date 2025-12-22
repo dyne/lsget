@@ -14,10 +14,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path"
@@ -623,7 +625,7 @@ func (s *server) logCommand(cmd, filePath, ip string) {
 	timestamp := time.Now().Format("[02/Jan/2006:15:04:05 -0700]")
 	// Format: ip - - timestamp "POST /api/exec?cmd=COMMAND&file=PATH HTTP/1.1" 200 0 "-" "-"
 	logLine := fmt.Sprintf("%s - - %s \"POST /api/exec?cmd=%s&file=%s HTTP/1.1\" 200 0 \"-\" \"-\"\n",
-		ip, timestamp, cmd, urlQueryEscape(filePath))
+		ip, timestamp, cmd, url.QueryEscape(filePath))
 	_, _ = f.WriteString(logLine)
 }
 
@@ -840,6 +842,7 @@ type execResp struct {
 	DocType   string  `json:"docType,omitempty"`
 	Clipboard string  `json:"clipboard,omitempty"`
 	HTML      string  `json:"html,omitempty"`
+	Redirect  string  `json:"redirect,omitempty"`
 }
 
 type completeReq struct {
@@ -872,12 +875,20 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Check for no-JS fallback query parameter
 	noJS := r.URL.Query().Get("nojs") == "1"
 
-	// For root path, check if we need no-JS fallback
+	// For root path, check for index.html first
 	if r.URL.Path == "/" {
+		indexPath := filepath.Join(s.rootAbs, "index.html")
+		if indexInfo, err := os.Stat(indexPath); err == nil && !indexInfo.IsDir() {
+			// Serve index.html instead of lsget interface
+			s.serveFile(w, r, indexPath, indexInfo)
+			return
+		}
+		
+		// No index.html, serve lsget interface or no-JS fallback
 		if noJS {
 			s.serveNoJSDirectory(w, r, "/")
 		} else {
-			s.serveMainIndex(w, r)
+			s.serveMainIndex(w, r, "/")
 		}
 		return
 	}
@@ -890,7 +901,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		if noJS {
 			http.NotFound(w, r)
 		} else {
-			s.serveMainIndex(w, r)
+			s.serveMainIndex(w, r, "/")
 		}
 		return
 	}
@@ -902,17 +913,25 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		if noJS {
 			http.NotFound(w, r)
 		} else {
-			s.serveMainIndex(w, r)
+			s.serveMainIndex(w, r, "/")
 		}
 		return
 	}
 
 	if info.IsDir() {
-		// It's a directory
+		// Check if directory contains index.html
+		indexPath := filepath.Join(realPath, "index.html")
+		if indexInfo, err := os.Stat(indexPath); err == nil && !indexInfo.IsDir() {
+			// Serve index.html instead of lsget interface
+			s.serveFile(w, r, indexPath, indexInfo)
+			return
+		}
+		
+		// It's a directory without index.html
 		if noJS {
 			s.serveNoJSDirectory(w, r, requestPath)
 		} else {
-			s.serveMainIndex(w, r)
+			s.serveMainIndex(w, r, requestPath)
 		}
 	} else {
 		// It's a file, serve it directly for download
@@ -946,7 +965,7 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, realPath stri
 	http.ServeFile(w, r, realPath)
 }
 
-func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
+func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request, initialPath string) {
 	var htmlContent []byte
 
 	// Serve from disk if available so you can iterate quickly.
@@ -958,7 +977,7 @@ func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Replace placeholder with actual help message and initial path
-	processedHTML := s.processHTMLTemplate(htmlContent, r.URL.Path)
+	processedHTML := s.processHTMLTemplate(htmlContent, initialPath)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -979,11 +998,11 @@ func (s *server) serveNoJSDirectory(w http.ResponseWriter, r *http.Request, virt
 		return
 	}
 
-	// Start HTML document
+	escapedVirtualPath := template.HTMLEscapeString(virtualPath)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 
-	// Write minimal HTML with monospace font and blue links
 	_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
@@ -995,28 +1014,24 @@ a:visited { color: blue; }
 </style>
 </head>
 <body>
-`, virtualPath)
+`, escapedVirtualPath)
 
-	_, _ = fmt.Fprintf(w, "<h1>Index of %s</h1>\n", virtualPath)
+	_, _ = fmt.Fprintf(w, "<h1>Index of %s</h1>\n", escapedVirtualPath)
 	_, _ = fmt.Fprintf(w, "<hr>\n")
 
-	// Add parent directory link if not at root
 	if virtualPath != "/" {
 		parentPath := path.Dir(virtualPath)
-		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">[Parent Directory]</a><br>\n", parentPath)
+		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">[Parent Directory]</a><br>\n", urlEscapeVirtual(parentPath))
 	}
 
-	// List directories first, then files
 	var dirs []os.DirEntry
 	var files []os.DirEntry
 
 	for _, entry := range entries {
 		name := entry.Name()
-		// Skip hidden files
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		// Check if should be ignored
 		realFilePath := filepath.Join(realPath, name)
 		if s.shouldIgnore(realFilePath, name) {
 			continue
@@ -1029,7 +1044,6 @@ a:visited { color: blue; }
 		}
 	}
 
-	// Sort alphabetically
 	sort.Slice(dirs, func(i, j int) bool {
 		return dirs[i].Name() < dirs[j].Name()
 	})
@@ -1037,13 +1051,11 @@ a:visited { color: blue; }
 		return files[i].Name() < files[j].Name()
 	})
 
-	// Display directories
 	for _, dir := range dirs {
 		dirPath := path.Join(virtualPath, dir.Name())
-		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", dirPath, dir.Name())
+		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", html.EscapeString(urlEscapeVirtual(dirPath)), template.HTMLEscapeString(dir.Name()))
 	}
 
-	// Display files
 	for _, file := range files {
 		filePath := path.Join(virtualPath, file.Name())
 		info, _ := file.Info()
@@ -1051,7 +1063,7 @@ a:visited { color: blue; }
 		if info != nil {
 			size = fmt.Sprintf(" (%d bytes)", info.Size())
 		}
-		_, _ = fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", filePath, file.Name(), size)
+		_, _ = fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", html.EscapeString(urlEscapeVirtual(filePath)), template.HTMLEscapeString(file.Name()), size)
 	}
 
 	_, _ = fmt.Fprintf(w, "</body>\n</html>\n")
@@ -1126,9 +1138,10 @@ func (s *server) processHTMLTemplate(htmlContent []byte, requestPath string) []b
 		initialPath = "/"
 	}
 
-	// Replace the placeholders in HTML
+	escapedInitialPath := template.HTMLEscapeString(initialPath)
+
 	result := strings.ReplaceAll(string(htmlContent), "{{HELP_MESSAGE}}", formattedHelpMessage)
-	result = strings.ReplaceAll(result, "{{INITIAL_PATH}}", initialPath)
+	result = strings.ReplaceAll(result, "{{INITIAL_PATH}}", escapedInitialPath)
 	return []byte(result)
 }
 
@@ -1346,6 +1359,15 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.cwd = newV
+		
+		// Check if directory contains index.html
+		indexPath := filepath.Join(newReal, "index.html")
+		if _, err := os.Stat(indexPath); err == nil {
+			// Directory has index.html, redirect to it
+			_ = json.NewEncoder(w).Encode(execResp{Redirect: newV})
+			return
+		}
+		
 		readme, docType := readDocFile(newReal)
 		// Include the new CWD in the response so client can update URL
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme, DocType: docType})
@@ -1379,6 +1401,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		if category == FileCategoryImage {
 			url := urlEscapeVirtual(vp)
 			name := filepath.Base(argv[0])
+			escapedURL := template.HTMLEscapeString(url)
+			escapedName := template.HTMLEscapeString(name)
 			imgHTML := fmt.Sprintf(
 				`<div style="margin: 0.5em 0;">`+
 					`<a href="%s" target="_blank" style="display: inline-block; text-decoration: none;">`+
@@ -1386,7 +1410,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 					`</a>`+
 					`<div style="color: #a6d189; font-size: 0.85em; margin-top: 0.25em;">📷 %s (%s)</div>`+
 					`</div>`,
-				url, url, name, name, formatHumanSize(info.Size()))
+				escapedURL, escapedURL, escapedName, escapedName, formatHumanSize(info.Size()))
 			_ = json.NewEncoder(w).Encode(execResp{HTML: imgHTML})
 			return
 		}
@@ -1453,8 +1477,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			// Multiple files, create zip
 			s.logCommand("get", "(pattern match)", ip)
-			url := "/api/download?pattern=" + urlQueryEscape(pattern) + "&cwd=" + urlEscapeVirtual(sess.cwd)
-			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: url})
+			downloadURL := "/api/download?pattern=" + url.QueryEscape(pattern) + "&cwd=" + urlEscapeVirtual(sess.cwd)
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: downloadURL})
 			return
 		}
 
@@ -2318,22 +2342,9 @@ func urlEscapeVirtual(v string) string {
 	// Keep it URL-safe while preserving slashes in the virtual path.
 	parts := strings.Split(strings.TrimPrefix(cleanVirtual(v), "/"), "/")
 	for i, p := range parts {
-		parts[i] = urlQueryEscape(p)
+		parts[i] = url.PathEscape(p)
 	}
 	return "/" + strings.Join(parts, "/")
-}
-
-func urlQueryEscape(s string) string {
-	// minimal escape to keep path segments safe in query
-	repl := strings.NewReplacer(
-		" ", "%20",
-		"#", "%23",
-		"?", "%3F",
-		"&", "%26",
-		"+", "%2B",
-		"%", "%25",
-	)
-	return repl.Replace(s)
 }
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
