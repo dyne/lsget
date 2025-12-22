@@ -821,7 +821,7 @@
                   $cwd = cwd;
                   $ps1 = `guest@browser:${cwd}$ `;
                   // Update URL and browser history when directory changes
-                  const newPath = (typeof cwd === 'string' && cwd.startsWith('/')) ? (cwd || '/') : '/';
+                  const newPath = (typeof cwd === 'string' && cwd.startsWith('/')) ? cwd : '/';
                   if (window.location.pathname !== newPath) {
                     window.history.pushState({ cwd: newPath }, '', newPath === '/' ? '/' : newPath);
                   }
