@@ -1263,11 +1263,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 		// If path is a file, show just the file
 		if !info.IsDir() {
-			// If it's a file, show the file in the listing
+			// If it's a file, show the file in the listing with absolute virtual path
+			displayName := virtualPath
 			if long {
-				_ = json.NewEncoder(w).Encode(execResp{Output: formatLong(info, colorizeName(info, filepath.Base(realCwd)), humanReadable)})
+				_ = json.NewEncoder(w).Encode(execResp{Output: formatLong(info, colorizeName(info, displayName), humanReadable)})
 			} else {
-				_ = json.NewEncoder(w).Encode(execResp{Output: colorizeName(info, filepath.Base(realCwd))})
+				_ = json.NewEncoder(w).Encode(execResp{Output: colorizeName(info, displayName)})
 			}
 			return
 		}
@@ -1312,7 +1313,10 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 					coloredNames = append(coloredNames, name)
 					continue
 				}
-				coloredNames = append(coloredNames, colorizeName(info, name))
+				// Use absolute virtual path for clickable links
+				// path.Join (not filepath.Join) ensures Unix-style forward slashes for virtual paths
+				displayName := path.Join(virtualPath, name)
+				coloredNames = append(coloredNames, colorizeName(info, displayName))
 			}
 			_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(coloredNames, "\n")})
 			return
@@ -1328,8 +1332,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
+			// Use absolute virtual path for clickable links
+			// path.Join (not filepath.Join) ensures Unix-style forward slashes for virtual paths
+			displayName := path.Join(virtualPath, name)
 			// Format the long listing with colorized filename
-			longEntry := formatLong(info, colorizeName(info, name), humanReadable)
+			longEntry := formatLong(info, colorizeName(info, displayName), humanReadable)
 			longs = append(longs, longEntry)
 		}
 		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(longs, "\n")})
