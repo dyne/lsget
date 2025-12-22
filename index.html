@@ -812,8 +812,8 @@
                   console.error('Failed to copy to clipboard:', err);
                 });
               }
-              if (redirect) {
-                // Redirect to the specified path
+              if (typeof redirect === 'string' && redirect.startsWith('/')) {
+                // Redirect to the specified path (validated as same-origin relative path)
                 window.location.href = redirect;
                 return;
               }
