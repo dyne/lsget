@@ -370,3 +370,56 @@ func TestHandleIndex_ExistingDirSetsInitialPath(t *testing.T) {
 		t.Fatalf("expected initial path '/sub', body: %q", body)
 	}
 }
+
+func TestNoJSHTMLEscaping(t *testing.T) {
+	s := newTestServer(t)
+
+	// Create files/dirs with HTML-sensitive characters
+	testCases := []struct {
+		name     string
+		isDir    bool
+		expected string // what should NOT appear in the output (unescaped)
+	}{
+		{`test"file.txt`, false, `href="/test"file.txt"`},      // quote should be escaped
+		{`test'file.txt`, false, `href="/test'file.txt"`},      // apostrophe should be escaped
+		{`test<file.txt`, false, `href="/test<file.txt"`},      // angle bracket should be escaped
+		{`test>file.txt`, false, `href="/test>file.txt"`},      // angle bracket should be escaped
+		{`test&file.txt`, false, `href="/test&file.txt"`},      // ampersand should be escaped (but URL-escaped)
+		{`test"dir`, true, `href="/test"dir?nojs=1"`},          // quote in directory name
+	}
+
+	for _, tc := range testCases {
+		var path string
+		if tc.isDir {
+			path = filepath.Join(s.rootAbs, tc.name)
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatalf("mkdir %q: %v", tc.name, err)
+			}
+		} else {
+			path = filepath.Join(s.rootAbs, tc.name)
+			if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+				t.Fatalf("write %q: %v", tc.name, err)
+			}
+		}
+	}
+
+	r := httptest.NewRequest("GET", "/?nojs=1", nil)
+	w := httptest.NewRecorder()
+	s.serveNoJSDirectory(w, r, "/")
+	if w.Code != 200 {
+		t.Fatalf("nojs status: %d", w.Code)
+	}
+	body := w.Body.String()
+
+	// Check that unescaped dangerous patterns do NOT appear
+	for _, tc := range testCases {
+		if strings.Contains(body, tc.expected) {
+			t.Errorf("Found unescaped pattern %q in nojs output for file %q", tc.expected, tc.name)
+		}
+	}
+
+	// Verify that HTML escaping was applied (quotes should be &quot; or &#34;)
+	if strings.Contains(body, `href="/test"file.txt"`) {
+		t.Error("Found literal quote in href attribute - HTML escaping not applied")
+	}
+}
