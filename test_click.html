@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script>
+// Convert ANSI color codes to HTML with CSS styling
+window.ansiToHtml = function (s) {
+  const colors = {
+    "\x1b[0m": "</span>",
+    "\x1b[37m": '<span style="color: #c6d0f5">',
+  };
+  let result = String(s);
+  for (const [code, html] of Object.entries(colors)) {
+    result = result.replace(new RegExp(code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), html);
+  }
+  return result;
+};
+
+// Make filenames and directories clickable
+window.makeClickable = function (html) {
+  return html.replace(
+    /<span style="[^"]*color: #[0-9a-f]{6}[^"]*">(?:<span[^>]*>)?([^<]+?)(?:<\/span>)?<\/span>/gi,
+    function (match, filename) {
+      if (match.includes('clickable-file')) return match;
+      const name = filename.trim();
+      if (!name) return match;
+      const isDir = name.endsWith('/');
+      const cleanName = isDir ? name.slice(0, -1) : name;
+      const cmd = isDir ? 'cd' : 'cat';
+      const escaped = cleanName.replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+      return match.replace(/^<span/, `<span class="clickable-file" data-cmd="${cmd}" data-file="${escaped}"`);
+    }
+  );
+};
+
+const raw = '\x1b[37m/zenroom/another.txt\x1b[0m\n\x1b[37m/zenroom/testfile.txt\x1b[0m';
+const html = ansiToHtml(raw);
+const clickable = makeClickable(html);
+console.log("Raw:", raw);
+console.log("HTML:", html);
+console.log("Clickable:", clickable);
+</script>
+</head>
+<body>
+<div id="output"></div>
+<script>
+document.getElementById('output').innerHTML = clickable;
+</script>
+</body>
+</html>
