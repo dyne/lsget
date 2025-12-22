@@ -332,3 +332,41 @@ func TestHandleComplete_Basic(t *testing.T) {
 		t.Fatalf("complete text-only: %s", string(data))
 	}
 }
+
+func TestHandleIndex_InvalidPathDoesNotReflectIntoHTML(t *testing.T) {
+	s := newTestServer(t)
+
+	r := httptest.NewRequest("GET", "/%61%27%22%3e%3c%69%6e%6a%65%63%74%61%62%6c%65%3e", nil)
+	w := httptest.NewRecorder()
+	s.handleIndex(w, r)
+	if w.Code != 200 {
+		t.Fatalf("index status: %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "data-initial-path=\"/\"") {
+		t.Fatalf("expected initial path '/', body: %q", body)
+	}
+	if strings.Contains(body, "injectable") {
+		t.Fatalf("unexpected reflection, body: %q", body)
+	}
+}
+
+func TestHandleIndex_ExistingDirSetsInitialPath(t *testing.T) {
+	s := newTestServer(t)
+
+	sub := filepath.Join(s.rootAbs, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest("GET", "/sub", nil)
+	w := httptest.NewRecorder()
+	s.handleIndex(w, r)
+	if w.Code != 200 {
+		t.Fatalf("index status: %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "data-initial-path=\"/sub\"") {
+		t.Fatalf("expected initial path '/sub', body: %q", body)
+	}
+}
