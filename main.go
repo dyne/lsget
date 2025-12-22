@@ -1313,7 +1313,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 					coloredNames = append(coloredNames, name)
 					continue
 				}
-				// Use absolute virtual path for each file/directory
+				// Use absolute virtual path for clickable links
+				// path.Join (not filepath.Join) ensures Unix-style forward slashes for virtual paths
 				displayName := path.Join(virtualPath, name)
 				coloredNames = append(coloredNames, colorizeName(info, displayName))
 			}
@@ -1331,7 +1332,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			// Use absolute virtual path for each file/directory
+			// Use absolute virtual path for clickable links
+			// path.Join (not filepath.Join) ensures Unix-style forward slashes for virtual paths
 			displayName := path.Join(virtualPath, name)
 			// Format the long listing with colorized filename
 			longEntry := formatLong(info, colorizeName(info, displayName), humanReadable)
