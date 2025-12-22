@@ -14,10 +14,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path"
@@ -623,7 +625,7 @@ func (s *server) logCommand(cmd, filePath, ip string) {
 	timestamp := time.Now().Format("[02/Jan/2006:15:04:05 -0700]")
 	// Format: ip - - timestamp "POST /api/exec?cmd=COMMAND&file=PATH HTTP/1.1" 200 0 "-" "-"
 	logLine := fmt.Sprintf("%s - - %s \"POST /api/exec?cmd=%s&file=%s HTTP/1.1\" 200 0 \"-\" \"-\"\n",
-		ip, timestamp, cmd, urlQueryEscape(filePath))
+		ip, timestamp, cmd, url.QueryEscape(filePath))
 	_, _ = f.WriteString(logLine)
 }
 
@@ -1051,7 +1053,7 @@ a:visited { color: blue; }
 
 	for _, dir := range dirs {
 		dirPath := path.Join(virtualPath, dir.Name())
-		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", urlEscapeVirtual(dirPath), template.HTMLEscapeString(dir.Name()))
+		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", html.EscapeString(urlEscapeVirtual(dirPath)), template.HTMLEscapeString(dir.Name()))
 	}
 
 	for _, file := range files {
@@ -1061,7 +1063,7 @@ a:visited { color: blue; }
 		if info != nil {
 			size = fmt.Sprintf(" (%d bytes)", info.Size())
 		}
-		_, _ = fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", urlEscapeVirtual(filePath), template.HTMLEscapeString(file.Name()), size)
+		_, _ = fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", html.EscapeString(urlEscapeVirtual(filePath)), template.HTMLEscapeString(file.Name()), size)
 	}
 
 	_, _ = fmt.Fprintf(w, "</body>\n</html>\n")
@@ -1475,8 +1477,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			// Multiple files, create zip
 			s.logCommand("get", "(pattern match)", ip)
-			url := "/api/download?pattern=" + urlQueryEscape(pattern) + "&cwd=" + urlEscapeVirtual(sess.cwd)
-			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: url})
+			downloadURL := "/api/download?pattern=" + url.QueryEscape(pattern) + "&cwd=" + urlEscapeVirtual(sess.cwd)
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: downloadURL})
 			return
 		}
 
@@ -2340,22 +2342,9 @@ func urlEscapeVirtual(v string) string {
 	// Keep it URL-safe while preserving slashes in the virtual path.
 	parts := strings.Split(strings.TrimPrefix(cleanVirtual(v), "/"), "/")
 	for i, p := range parts {
-		parts[i] = urlQueryEscape(p)
+		parts[i] = url.PathEscape(p)
 	}
 	return "/" + strings.Join(parts, "/")
-}
-
-func urlQueryEscape(s string) string {
-	// minimal escape to keep path segments safe in query
-	repl := strings.NewReplacer(
-		" ", "%20",
-		"#", "%23",
-		"?", "%3F",
-		"&", "%26",
-		"+", "%2B",
-		"%", "%25",
-	)
-	return repl.Replace(s)
 }
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -151,8 +152,9 @@ func TestURLEscapeHelpers(t *testing.T) {
 	if !strings.Contains(esc, "%20") || !strings.HasPrefix(esc, "/") {
 		t.Fatalf("urlEscapeVirtual: %q", esc)
 	}
-	if urlQueryEscape("a b") != "a%20b" {
-		t.Fatal("urlQueryEscape space")
+	// url.PathEscape is used internally, verify it escapes spaces
+	if !strings.Contains(url.PathEscape("a b"), "%20") {
+		t.Fatal("url.PathEscape space")
 	}
 }
 
