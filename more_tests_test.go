@@ -69,7 +69,7 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("T"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	body, typ, truncated := readDocFile(openTestDownloadRoot(t, dir), ".")
+	body, typ, truncated := readDocFile(t.Context(), openTestDownloadRoot(t, dir), ".")
 	if body != "T" || typ != "text" || truncated {
 		t.Fatalf("readme.txt: %q %q", body, typ)
 	}
@@ -78,7 +78,7 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir2, "guide.rst"), []byte("R"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b2, t2, truncated := readDocFile(openTestDownloadRoot(t, dir2), ".")
+	b2, t2, truncated := readDocFile(t.Context(), openTestDownloadRoot(t, dir2), ".")
 	if b2 != "R" || t2 != "rst" || truncated {
 		t.Fatalf("rst fallback: %q %q", b2, t2)
 	}
@@ -87,7 +87,7 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir3, "file.nfo"), []byte("NFO"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b3, t3, truncated := readDocFile(openTestDownloadRoot(t, dir3), ".")
+	b3, t3, truncated := readDocFile(t.Context(), openTestDownloadRoot(t, dir3), ".")
 	if b3 != "NFO" || t3 != "nfo" || truncated {
 		t.Fatalf("nfo: %q %q", b3, t3)
 	}
@@ -215,13 +215,13 @@ func TestCollectFilesForDownload_DotAndSubPattern(t *testing.T) {
 
 	// dot -> collect directory
 	root := openTestDownloadRoot(t, s.rootAbs)
-	files, err := collectFilesForDownload(root, "/sub", ".")
+	files, err := collectFilesForDownload(t.Context(), newWorkBudget(), root, "/sub", ".")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("dot collect: %v %v", err, files)
 	}
 
 	// subdir pattern
-	files2, err := collectFilesForDownload(root, "/", "sub/*.txt")
+	files2, err := collectFilesForDownload(t.Context(), newWorkBudget(), root, "/", "sub/*.txt")
 	if err != nil || len(files2) != 1 || files2[0].virtualPath != "/sub/a.txt" {
 		t.Fatalf("sub pattern: %v %#v", err, files2)
 	}
@@ -237,7 +237,9 @@ func TestSendZipArchive_Content(t *testing.T) {
 	_ = os.WriteFile(f2, []byte("BB"), 0o644)
 	files := []fileInfo{{virtualPath: "/a.txt", relativePath: "a.txt"}, {virtualPath: "/b.txt", relativePath: "b.txt"}}
 	w := httptest.NewRecorder()
-	sendZipArchive(w, openTestDownloadRoot(t, s.rootAbs), files, "test.zip")
+	if err := sendZipArchive(t.Context(), w, openTestDownloadRoot(t, s.rootAbs), files, "test.zip"); err != nil {
+		t.Fatal(err)
+	}
 	if ct := w.Result().Header.Get("Content-Type"); ct != "application/zip" {
 		t.Fatalf("ctype: %q", ct)
 	}
@@ -273,12 +275,12 @@ func TestBuildTree_HiddenAndDepth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var b strings.Builder
-	dirs, files, err := buildTree(openTestDownloadRoot(t, s.rootAbs), &b, ".", "", true, 1)
+	var b boundedText
+	dirs, files, err := buildTree(t.Context(), newWorkBudget(), openTestDownloadRoot(t, s.rootAbs), &b, ".", true, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := b.String()
+	out := b.text.String()
 	if !strings.Contains(out, ".hidden") {
 		t.Fatalf("should include hidden: %q", out)
 	}

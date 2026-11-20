@@ -238,14 +238,17 @@ func getFileCategory(filename string) FileCategory {
 
 const readmePreviewLimit = 256 * 1024
 
-func readDocPreview(root *os.Root, name string) (string, bool, error) {
+func readDocPreview(ctx context.Context, root *os.Root, name string) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
 	file, _, err := openVisibleFile(root, name)
 	if err != nil {
 		return "", false, err
 	}
 	defer func() { _ = file.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(file, readmePreviewLimit+1))
+	body, err := io.ReadAll(io.LimitReader(contextReader{ctx, file}, readmePreviewLimit+1))
 	if err != nil {
 		return "", false, err
 	}
@@ -256,9 +259,9 @@ func readDocPreview(root *os.Root, name string) (string, bool, error) {
 }
 
 // readDocFile selects the most relevant visible document and previews its contents.
-func readDocFile(root *os.Root, dir string) (string, string, bool) {
-	ents, err := readVisibleDir(root, dir)
-	if err != nil {
+func readDocFile(ctx context.Context, root *os.Root, dir string) (string, string, bool) {
+	ents, err := readVisibleDir(ctx, newWorkBudget(), root, dir)
+	if err != nil && !errors.Is(err, errWorkLimit) {
 		return "", "", false
 	}
 
@@ -275,9 +278,19 @@ func readDocFile(root *os.Root, dir string) (string, string, bool) {
 
 	// First, try exact matches in priority order
 	for _, docFile := range docFiles {
+		if errors.Is(err, errWorkLimit) {
+			// A canonical README may be beyond the bounded directory sample.
+			body, truncated, previewErr := readDocPreview(ctx, root, path.Join(dir, docFile.pattern))
+			if previewErr == nil {
+				return body, docFile.fileType, truncated
+			}
+		}
 		for _, e := range ents {
+			if ctx.Err() != nil {
+				return "", "", false
+			}
 			if strings.EqualFold(e.Name(), docFile.pattern) {
-				body, truncated, err := readDocPreview(root, path.Join(dir, e.Name()))
+				body, truncated, err := readDocPreview(ctx, root, path.Join(dir, e.Name()))
 				if err != nil {
 					continue
 				}
@@ -288,10 +301,13 @@ func readDocFile(root *os.Root, dir string) (string, string, bool) {
 
 	// Then try any file with supported extensions
 	for _, e := range ents {
+		if ctx.Err() != nil {
+			return "", "", false
+		}
 		ext := path.Ext(strings.ToLower(e.Name()))
 		for _, docFile := range docFiles {
 			if ext == path.Ext(docFile.pattern) {
-				body, truncated, err := readDocPreview(root, path.Join(dir, e.Name()))
+				body, truncated, err := readDocPreview(ctx, root, path.Join(dir, e.Name()))
 				if err == nil {
 					return body, docFile.fileType, truncated
 				}
@@ -364,6 +380,7 @@ type server struct {
 	sessionNow          func() time.Time
 	sessionLimit        int
 	secureSessionCookie bool
+	workSlots           chan struct{}
 
 	devTemplate        string
 	shellCSPReportOnly bool
@@ -379,6 +396,7 @@ func newServer(rootAbs string, catMax int64, logfile, baseURL string) *server {
 		sessions:     make(map[string]*session),
 		sessionNow:   time.Now,
 		sessionLimit: maxSessions,
+		workSlots:    make(chan struct{}, maxWorkJobs),
 		logfile:      logfile,
 		baseURL:      baseURL,
 	}
@@ -469,19 +487,29 @@ type sitemapSnapshot struct {
 	generatedAt time.Time
 }
 
-func (s *server) getSitemap(refresh bool) (*sitemapSnapshot, error) {
+func (s *server) getSitemap(ctx context.Context, refresh bool) (*sitemapSnapshot, error) {
 	if cached := s.sitemap.Load(); cached != nil && !refresh {
 		return cached, nil
 	}
 
-	s.sitemapMu.Lock()
+	if !s.sitemapMu.TryLock() {
+		return nil, errWorkBusy
+	}
 	defer s.sitemapMu.Unlock()
 	if cached := s.sitemap.Load(); cached != nil && !refresh {
 		return cached, nil
 	}
 
-	content, err := s.generateSitemap()
+	release, err := s.acquireWork(ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer release()
+	content, err := s.generateSitemap(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	snapshot := &sitemapSnapshot{content: content, generatedAt: time.Now()}
@@ -490,7 +518,7 @@ func (s *server) getSitemap(refresh bool) (*sitemapSnapshot, error) {
 }
 
 // generateSitemap builds the XML from the files currently in the served root.
-func (s *server) generateSitemap() (string, error) {
+func (s *server) generateSitemap(ctx context.Context) (string, error) {
 	root, err := os.OpenRoot(s.rootAbs)
 	if err != nil {
 		return "", err
@@ -533,12 +561,12 @@ func (s *server) generateSitemap() (string, error) {
 		return "", err
 	}
 	addEntry(".", info)
-	err = walkVisibleDir(root, ".", func(entry visibleEntry) bool {
+	err = walkVisibleDir(ctx, newWorkBudget(), root, ".", func(entry visibleEntry) (bool, error) {
 		if entry.name == "sitemap.xml" {
-			return false
+			return false, nil
 		}
 		addEntry(entry.name, entry.info)
-		return true
+		return true, nil
 	})
 
 	if err != nil {
@@ -554,6 +582,9 @@ func (s *server) generateSitemap() (string, error) {
 	xml.WriteString(`        xmlns:xhtml="http://www.w3.org/1999/xhtml">` + "\n")
 
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		xml.WriteString("  <url>\n")
 		xml.WriteString("    <loc>" + template.HTMLEscapeString(entry.loc) + "</loc>\n")
 		xml.WriteString("    <lastmod>" + entry.lastmod + "</lastmod>\n")
@@ -594,6 +625,9 @@ func (s *server) generateSitemap() (string, error) {
 		}
 
 		xml.WriteString("  </url>\n")
+		if xml.Len() > maxSitemapBytes-len("</urlset>\n") {
+			return "", errWorkLimit
+		}
 	}
 
 	xml.WriteString("</urlset>\n")
@@ -607,7 +641,7 @@ func (s *server) startSitemapGenerator(ctx context.Context, interval time.Durati
 		return
 	}
 
-	if _, err := s.getSitemap(true); err != nil {
+	if _, err := s.getSitemap(ctx, true); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to generate initial sitemap: %v\n", err)
 	} else {
 		fmt.Println("Generated sitemap.xml in memory")
@@ -622,7 +656,7 @@ func (s *server) startSitemapGenerator(ctx context.Context, interval time.Durati
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := s.getSitemap(true); err != nil {
+				if _, err := s.getSitemap(ctx, true); err != nil {
 					fmt.Fprintf(os.Stderr, "failed to regenerate sitemap: %v\n", err)
 				}
 			}
@@ -928,6 +962,7 @@ type execReq struct {
 
 type execResp struct {
 	Output          string     `json:"output"`
+	Truncated       bool       `json:"truncated,omitempty"`
 	Download        string     `json:"download,omitempty"`
 	CWD             string     `json:"cwd,omitempty"`
 	Readme          *string    `json:"readme,omitempty"`
@@ -960,7 +995,8 @@ type completeItem struct {
 }
 
 type completeResp struct {
-	Items []completeItem `json:"items"`
+	Items     []completeItem `json:"items"`
+	Truncated bool           `json:"truncated,omitempty"`
 }
 
 type configResp struct {
@@ -1010,7 +1046,12 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if noJS {
-		serveNoJSDirectory(w, root, requestPath)
+		release := s.reserveWork(w, r)
+		if release == nil {
+			return
+		}
+		defer release()
+		serveNoJSDirectory(r.Context(), w, root, requestPath)
 	} else {
 		s.serveMainIndex(w, requestPath)
 	}
@@ -1107,7 +1148,10 @@ func openVisibleFile(root *os.Root, filePath string) (*os.File, fs.FileInfo, err
 	return file, opened, nil
 }
 
-func readVisibleDir(root *os.Root, name string) ([]fs.DirEntry, error) {
+func readVisibleDir(ctx context.Context, budget *workBudget, root *os.Root, name string) ([]fs.DirEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	info, err := visibleInfo(root, name)
 	if err != nil {
 		return nil, err
@@ -1127,7 +1171,12 @@ func readVisibleDir(root *os.Root, name string) ([]fs.DirEntry, error) {
 	if !os.SameFile(info, opened) {
 		return nil, errHiddenPath
 	}
-	return fs.ReadDir(dir.FS(), ".")
+	file, err := dir.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	return budget.readEntries(ctx, file)
 }
 
 type visibleEntry struct {
@@ -1136,14 +1185,20 @@ type visibleEntry struct {
 	descend bool
 }
 
-func visibleChildren(root *os.Root, dir string) ([]visibleEntry, error) {
-	entries, err := readVisibleDir(root, dir)
-	if err != nil {
+func visibleChildren(ctx context.Context, budget *workBudget, root *os.Root, dir string) ([]visibleEntry, error) {
+	entries, err := readVisibleDir(ctx, budget, root, dir)
+	if err != nil && !errors.Is(err, errWorkLimit) {
 		return nil, err
 	}
 	var children []visibleEntry
 	for _, entry := range entries {
-		name := path.Join(dir, entry.Name())
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		name, nameErr := budget.childName(dir, entry.Name())
+		if nameErr != nil {
+			return children, nameErr
+		}
 		info, err := visibleInfo(root, name)
 		if err != nil {
 			continue
@@ -1151,22 +1206,38 @@ func visibleChildren(root *os.Root, dir string) ([]visibleEntry, error) {
 		// List visible directory links without recursing through them.
 		children = append(children, visibleEntry{name, info, entry.IsDir() && info.IsDir()})
 	}
-	return children, nil
+	return children, err
 }
 
 // walkVisibleDir keeps the directory's root error and skips unreadable children.
-// A false visit result prunes that entry's descendants.
-func walkVisibleDir(root *os.Root, dir string, visit func(visibleEntry) bool) error {
-	children, err := visibleChildren(root, dir)
-	if err != nil {
-		return err
-	}
-	for _, child := range children {
-		if visit(child) && child.descend {
-			_ = walkVisibleDir(root, child.name, visit)
+// A false visit result prunes that entry's descendants. A visit error stops the walk.
+func walkVisibleDir(ctx context.Context, budget *workBudget, root *os.Root, dir string, visit func(visibleEntry) (bool, error)) error {
+	var walk func(string, int) error
+	walk = func(dir string, depth int) error {
+		if depth == maxWalkDepth {
+			return errWorkLimit
 		}
+		children, readErr := visibleChildren(ctx, budget, root, dir)
+		for _, child := range children {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			descend, err := visit(child)
+			if err != nil {
+				return err
+			}
+			if readErr == nil && descend && child.descend {
+				if err := walk(child.name, depth+1); stopWork(err) {
+					return err
+				}
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return readErr
 	}
-	return nil
+	return walk(dir, 0)
 }
 
 func serveDownloadFile(w http.ResponseWriter, r *http.Request, root *os.Root, filePath string, attachment bool) {
@@ -1245,16 +1316,46 @@ func (s *server) setShellCSP(w http.ResponseWriter, nonce string) {
 }
 
 // serveNoJSDirectory serves a plain HTML directory listing for no-JS fallback
-func serveNoJSDirectory(w http.ResponseWriter, root *os.Root, virtualPath string) {
+func serveNoJSDirectory(ctx context.Context, w http.ResponseWriter, root *os.Root, virtualPath string) {
 	dir := rootedName(virtualPath)
-	entries, err := readVisibleDir(root, dir)
+	entries, err := visibleChildren(ctx, newWorkBudget(), root, dir)
+	if ctx.Err() != nil {
+		return
+	}
 	if errors.Is(err, fs.ErrNotExist) {
 		http.Error(w, "404 page not found", http.StatusNotFound)
 		return
 	}
-	if err != nil {
+	truncated := errors.Is(err, errWorkLimit)
+	if err != nil && !truncated {
 		http.Error(w, "Error reading directory", http.StatusInternalServerError)
 		return
+	}
+	// Show directories before files, keeping each group alphabetized.
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].info.IsDir() && !entries[j].info.IsDir()
+	})
+	var listing boundedText
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
+		name := path.Base(entry.name)
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		href := html.EscapeString(urlEscapeVirtual(path.Join(virtualPath, name)))
+		label := template.HTMLEscapeString(name)
+		var line string
+		if entry.info.IsDir() {
+			line = fmt.Sprintf("<a href=\"%s?nojs=1\">%s/</a><br>", href, label)
+		} else {
+			line = fmt.Sprintf("<a href=\"%s\">%s</a> (%d bytes)<br>", href, label, entry.info.Size())
+		}
+		if listing.line(line) != nil {
+			truncated = true
+			break
+		}
 	}
 
 	escapedVirtualPath := template.HTMLEscapeString(virtualPath)
@@ -1283,26 +1384,11 @@ a:visited { color: blue; }
 		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">[Parent Directory]</a><br>\n", urlEscapeVirtual(parentPath))
 	}
 
-	var files strings.Builder
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		info, err := visibleInfo(root, path.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		href := html.EscapeString(urlEscapeVirtual(path.Join(virtualPath, name)))
-		label := template.HTMLEscapeString(name)
-		if info.IsDir() {
-			_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", href, label)
-		} else {
-			_, _ = fmt.Fprintf(&files, "<a href=\"%s\">%s</a> (%d bytes)<br>\n", href, label, info.Size())
-		}
+	_, _ = io.WriteString(w, listing.text.String())
+	if truncated {
+		_, _ = fmt.Fprintf(w, "\n<p>%s</p>", truncationNote)
 	}
-	_, _ = io.WriteString(w, files.String())
-	_, _ = fmt.Fprintf(w, "</body>\n</html>\n")
+	_, _ = io.WriteString(w, "\n</body>\n</html>\n")
 }
 
 func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
@@ -1389,7 +1475,18 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot, err := s.getSitemap(false)
+	snapshot, err := s.getSitemap(r.Context(), false)
+	if r.Context().Err() != nil {
+		return
+	}
+	if errors.Is(err, errWorkBusy) {
+		writeWorkBusy(w)
+		return
+	}
+	if errors.Is(err, errWorkLimit) {
+		http.Error(w, errWorkLimit.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Failed to generate sitemap", http.StatusInternalServerError)
 		return
@@ -1399,6 +1496,16 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	initialPath := r.URL.Query().Get("path")
+	if initialPath != "" && !s.acceptSessionOrigin(r) {
+		http.Error(w, "forbidden request origin", http.StatusForbidden)
+		return
+	}
+	release := s.reserveWork(w, r)
+	if release == nil {
+		return
+	}
+	defer release()
 	sess := s.acquireSession(w, r)
 	if sess == nil {
 		return
@@ -1409,12 +1516,15 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	var readmeTruncated bool
 	if root, err := os.OpenRoot(s.rootAbs); err == nil {
 		defer func() { _ = root.Close() }()
-		if initialPath := r.URL.Query().Get("path"); initialPath != "" {
+		if initialPath != "" {
 			if newV, err := sess.changeDirectory(root, cleanVirtual(initialPath)); err == nil {
 				cwd = newV
 			}
 		}
-		readme, docType, readmeTruncated = readDocFile(root, rootedName(cwd))
+		readme, docType, readmeTruncated = readDocFile(r.Context(), root, rootedName(cwd))
+	}
+	if r.Context().Err() != nil {
+		return
 	}
 
 	_ = json.NewEncoder(w).Encode(configResp{
@@ -1424,18 +1534,29 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	var req execReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if !s.readCommandRequest(w, r, &req) {
 		return
 	}
-	line := strings.TrimSpace(req.Input)
-	if line == "" {
+	args := parseArgs(strings.TrimSpace(req.Input))
+	if len(args) == 0 {
 		_ = json.NewEncoder(w).Encode(execResp{Output: ""})
 		return
 	}
-	args := parseArgs(line)
 	cmd := args[0]
 	argv := args[1:]
+	ctx := r.Context()
+	if ctx.Err() != nil {
+		return
+	}
+	switch cmd {
+	case "ls", "dir", "cd", "cat", "tree", "find", "grep", "sum", "checksum":
+		release := s.reserveWork(w, r)
+		if release == nil {
+			return
+		}
+		defer release()
+	}
+	budget := newWorkBudget()
 	var sess *session
 	var cwd string
 	defer func() {
@@ -1529,34 +1650,40 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// It is a directory, show its contents
-		ents, err := readVisibleDir(root, name)
-		if err != nil {
+		children, err := visibleChildren(ctx, budget, root, name)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil && !errors.Is(err, errWorkLimit) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
 			return
 		}
-		var lines []string
+		var output boundedText
 		if cwd != "/" {
 			parent := colorBlue + colorBold + "../" + colorReset
 			if long {
 				parent = "drwxr-xr-x          - " + parent
 			}
-			lines = append(lines, parent)
+			_ = output.line(parent)
 		}
-		for _, e := range ents {
-			if !showHidden && strings.HasPrefix(e.Name(), ".") {
-				continue // hide dotfiles unless -a flag is used
+		for _, entry := range children {
+			if ctx.Err() != nil {
+				return
 			}
-			info, err := visibleInfo(root, path.Join(name, e.Name()))
-			if err != nil {
+			base := path.Base(entry.name)
+			if !showHidden && strings.HasPrefix(base, ".") {
 				continue
 			}
-			display := colorizeName(info, path.Join(virtualPath, e.Name()))
+			display := colorizeName(entry.info, path.Join(virtualPath, base))
 			if long {
-				display = formatLong(info, display, humanReadable)
+				display = formatLong(entry.info, display, humanReadable)
 			}
-			lines = append(lines, display)
+			if appendErr := output.line(display); appendErr != nil {
+				err = appendErr
+				break
+			}
 		}
-		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(lines, "\n")})
+		_ = json.NewEncoder(w).Encode(output.response("", err))
 		return
 
 	case "cd":
@@ -1586,7 +1713,10 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		readme, docType, readmeTruncated := readDocFile(root, name)
+		readme, docType, readmeTruncated := readDocFile(ctx, root, name)
+		if ctx.Err() != nil {
+			return
+		}
 		// Include the new CWD in the response so client can update URL
 		_ = json.NewEncoder(w).Encode(execResp{
 			CWD: newV, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated,
@@ -1647,13 +1777,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = f.Close() }()
-		if info.Size() > s.catMax {
-			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("cat: file too large (%d > limit %d)", info.Size(), s.catMax)})
+		limit := min(s.catMax, int64(maxCommandText))
+		if info.Size() > limit {
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("cat: file too large (%d > limit %d)", info.Size(), limit)})
 			return
 		}
-		// read up to catMax bytes
 		var buf bytes.Buffer
-		if _, err := io.CopyN(&buf, f, s.catMax); err != nil && !errors.Is(err, io.EOF) {
+		_, err = io.CopyN(&buf, contextReader{ctx, f}, limit)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: read error"})
 			return
 		}
@@ -1689,9 +1823,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// Check if pattern contains wildcards or is a directory
 		if strings.ContainsAny(pattern, "*?[") || pattern == "." {
 			// Handle pattern-based download (multiple files)
-			files, err := collectFilesForDownload(root, cwd, pattern)
+			release := s.reserveWork(w, r)
+			if release == nil {
+				return
+			}
+			defer release()
+			files, err := collectFilesForDownload(ctx, budget, root, cwd, pattern)
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil {
-				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("download: %v", err)})
+				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("download: %v", err), Truncated: errors.Is(err, errWorkLimit)})
 				return
 			}
 			if len(files) == 0 {
@@ -1723,9 +1865,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		if info.IsDir() {
 			// Download directory as zip
-			files, err := collectFilesFromDirectory(root, name)
+			release := s.reserveWork(w, r)
+			if release == nil {
+				return
+			}
+			defer release()
+			files, err := collectFilesFromDirectory(ctx, budget, root, name)
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil {
-				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("download: %v", err)})
+				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("download: %v", err), Truncated: errors.Is(err, errWorkLimit)})
 				return
 			}
 			if len(files) == 0 {
@@ -1789,17 +1939,19 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var result strings.Builder
-		dirCount, fileCount, err := buildTree(root, &result, name, "", showHidden, maxDepth)
-		if err != nil {
+		var result boundedText
+		dirCount, fileCount, err := buildTree(ctx, budget, root, &result, name, showHidden, maxDepth)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil && !errors.Is(err, errWorkLimit) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: cannot read directory"})
 			return
 		}
-
-		// Add summary
-		result.WriteString(fmt.Sprintf("\n%d directories, %d files", dirCount, fileCount))
-
-		_ = json.NewEncoder(w).Encode(execResp{Output: result.String()})
+		if err == nil {
+			err = result.line(fmt.Sprintf("\n%d directories, %d files", dirCount, fileCount))
+		}
+		_ = json.NewEncoder(w).Encode(result.response("", err))
 		return
 
 	case "find":
@@ -1845,18 +1997,16 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		results, err := findFiles(root, name, namePattern, typeFilter)
-		if err != nil {
+		var output boundedText
+		err = findFiles(ctx, budget, root, name, namePattern, typeFilter, &output)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil && !errors.Is(err, errWorkLimit) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "find: cannot read directory"})
 			return
 		}
-
-		if len(results) == 0 {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "find: no matches found"})
-			return
-		}
-
-		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
+		_ = json.NewEncoder(w).Encode(output.response("find: no matches found", err))
 		return
 
 	case "url", "share":
@@ -1964,8 +2114,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		var results []string
+		search := newGrepSearch(pattern, ignoreCase, showLineNumbers)
+		var resultErr error
 		for _, file := range files {
+			if ctx.Err() != nil {
+				return
+			}
+			if budget.entries == 0 {
+				resultErr = errWorkLimit
+				break
+			}
+			budget.entries--
 			cwd, ok := cwdFor(file)
 			if !ok {
 				return
@@ -1973,34 +2132,30 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			vp := joinVirtual(cwd, file)
 			name := rootedName(vp)
 			info, err := visibleInfo(root, name)
-			if err != nil {
-				results = append(results, fmt.Sprintf("grep: %s: no such file or directory", file))
-				continue
+			switch {
+			case err != nil:
+				resultErr = search.output.line(fmt.Sprintf("grep: %s: no such file or directory", file))
+			case info.IsDir() && recursive:
+				resultErr = search.directory(ctx, budget, root, name)
+				if resultErr != nil && !stopWork(resultErr) {
+					resultErr = search.output.line(fmt.Sprintf("grep: %s: cannot read directory", file))
+				}
+			case info.IsDir():
+				resultErr = search.output.line(fmt.Sprintf("grep: %s: is a directory", file))
+			default:
+				resultErr = search.file(ctx, budget, root, name, len(files) > 1)
+				if resultErr != nil && !stopWork(resultErr) {
+					resultErr = search.output.line(fmt.Sprintf("grep: %s: %v", file, resultErr))
+				}
 			}
-
-			if info.IsDir() {
-				if recursive {
-					err := grepInDirectory(root, name, pattern, ignoreCase, showLineNumbers, &results)
-					if err != nil {
-						results = append(results, fmt.Sprintf("grep: %s: cannot read directory", file))
-					}
-				} else {
-					results = append(results, fmt.Sprintf("grep: %s: is a directory", file))
-				}
-			} else {
-				err := grepInFile(root, name, pattern, ignoreCase, showLineNumbers, len(files) > 1, &results)
-				if err != nil {
-					results = append(results, fmt.Sprintf("grep: %s: %v", file, err))
-				}
+			if resultErr != nil {
+				break
 			}
 		}
-
-		if len(results) == 0 {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "grep: no matches found"})
+		if ctx.Err() != nil {
 			return
 		}
-
-		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(results, "\n")})
+		_ = json.NewEncoder(w).Encode(search.output.response("grep: no matches found", resultErr))
 		return
 
 	case "sum", "checksum":
@@ -2034,7 +2189,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		// Use MultiWriter to compute both hashes in one pass
 		writer := io.MultiWriter(md5Hash, sha256Hash)
-		if _, err := io.Copy(writer, f); err != nil {
+		_, err = io.Copy(writer, contextReader{ctx, f})
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: error reading file"})
 			return
 		}
@@ -2054,124 +2213,21 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 }
 
 // findFiles recursively searches for files and directories matching the given pattern.
-func findFiles(root *os.Root, dir, pattern, typeFilter string) ([]string, error) {
-	var results []string
+func findFiles(ctx context.Context, budget *workBudget, root *os.Root, dir, pattern, typeFilter string, output *boundedText) error {
 	showHidden := strings.HasPrefix(pattern, ".")
-	err := walkVisibleDir(root, dir, func(entry visibleEntry) bool {
+	return walkVisibleDir(ctx, budget, root, dir, func(entry visibleEntry) (bool, error) {
 		name := path.Base(entry.name)
 		if !showHidden && strings.HasPrefix(name, ".") {
-			return false
+			return false, nil
 		}
 		matched, err := filepath.Match(pattern, name)
 		if err != nil {
-			return false
+			return false, nil
 		}
 		if matched && (typeFilter == "" || (typeFilter == "d") == entry.descend) {
-			results = append(results, colorizeName(entry.info, cleanVirtual(entry.name)))
+			return true, output.line(colorizeName(entry.info, cleanVirtual(entry.name)))
 		}
-		return true
-	})
-	return results, err
-}
-
-// grepInFile searches for a pattern within a single file
-func grepInFile(root *os.Root, name, pattern string, ignoreCase, showLineNumbers, showFilename bool, results *[]string) error {
-	file, info, err := openVisibleFile(root, name)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-
-	// Skip very large files to avoid memory issues
-	if info.Size() > 10*1024*1024 { // 10MB limit
-		return fmt.Errorf("file too large")
-	}
-
-	// Read a sample to check if it's text
-	sample := make([]byte, 4096)
-	n, _ := file.Read(sample)
-	if !looksText(sample[:n]) {
-		return nil // Skip binary files silently
-	}
-
-	// Reset file position
-	_, err = file.Seek(0, 0)
-	if err != nil {
-		return err
-	}
-
-	scanner := bufio.NewScanner(file)
-	lineNum := 1
-	searchPattern := pattern
-	if ignoreCase {
-		searchPattern = strings.ToLower(pattern)
-	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		searchLine := line
-		if ignoreCase {
-			searchLine = strings.ToLower(line)
-		}
-
-		if strings.Contains(searchLine, searchPattern) {
-			var result strings.Builder
-
-			// Add filename if multiple files or recursive search
-			if showFilename {
-				result.WriteString(colorCyan)
-				result.WriteString(cleanVirtual(name))
-				result.WriteString(colorReset)
-				result.WriteString(":")
-			}
-
-			// Add line number if requested
-			if showLineNumbers {
-				result.WriteString(colorGreen)
-				result.WriteString(fmt.Sprintf("%d", lineNum))
-				result.WriteString(colorReset)
-				result.WriteString(":")
-			}
-
-			// Highlight the matching pattern in the line
-			if ignoreCase {
-				// Case insensitive highlighting
-				lowerLine := strings.ToLower(line)
-				start := strings.Index(lowerLine, searchPattern)
-				if start >= 0 {
-					end := start + len(searchPattern)
-					highlighted := line[:start] +
-						colorYellow + colorBold + line[start:end] + colorReset +
-						line[end:]
-					result.WriteString(highlighted)
-				} else {
-					result.WriteString(line)
-				}
-			} else {
-				// Case sensitive highlighting
-				highlighted := strings.ReplaceAll(line, pattern,
-					colorYellow+colorBold+pattern+colorReset)
-				result.WriteString(highlighted)
-			}
-
-			*results = append(*results, result.String())
-		}
-		lineNum++
-	}
-
-	return scanner.Err()
-}
-
-// grepInDirectory recursively searches visible, non-dot files.
-func grepInDirectory(root *os.Root, dir, pattern string, ignoreCase, showLineNumbers bool, results *[]string) error {
-	return walkVisibleDir(root, dir, func(entry visibleEntry) bool {
-		if strings.HasPrefix(path.Base(entry.name), ".") {
-			return false
-		}
-		if entry.info.Mode().IsRegular() {
-			_ = grepInFile(root, entry.name, pattern, ignoreCase, showLineNumbers, true, results)
-		}
-		return true
+		return true, nil
 	})
 }
 
@@ -2181,7 +2237,10 @@ type fileInfo struct {
 }
 
 // collectFilesForDownload collects files matching a name or pattern for download.
-func collectFilesForDownload(root *os.Root, cwd, pattern string) ([]fileInfo, error) {
+func collectFilesForDownload(ctx context.Context, budget *workBudget, root *os.Root, cwd, pattern string) ([]fileInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	name := rootedName(joinVirtual(cwd, pattern))
 	if !strings.ContainsAny(pattern, "*?[") {
 		info, err := visibleInfo(root, name)
@@ -2189,24 +2248,30 @@ func collectFilesForDownload(root *os.Root, cwd, pattern string) ([]fileInfo, er
 			return nil, err
 		}
 		if info.IsDir() {
-			return collectFilesFromDirectory(root, name)
+			return collectFilesFromDirectory(ctx, budget, root, name)
 		}
 		return []fileInfo{{virtualPath: "/" + name, relativePath: path.Base(name)}}, nil
 	}
 
 	dir := rootedName(joinVirtual(cwd, path.Dir(pattern)))
-	entries, err := readVisibleDir(root, dir)
+	entries, err := readVisibleDir(ctx, budget, root, dir)
 	if err != nil {
 		return nil, err
 	}
 
 	var matches []fileInfo
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		matched, err := filepath.Match(path.Base(pattern), entry.Name())
 		if err != nil || !matched || entry.IsDir() {
 			continue
 		}
-		name := path.Join(dir, entry.Name())
+		name, err := budget.childName(dir, entry.Name())
+		if err != nil {
+			return nil, err
+		}
 		info, err := visibleInfo(root, name)
 		if err == nil && info.Mode().IsRegular() {
 			matches = append(matches, fileInfo{virtualPath: "/" + name, relativePath: entry.Name()})
@@ -2227,12 +2292,12 @@ func downloadDirectoryName(root *os.Root, dir string) string {
 }
 
 // collectFilesFromDirectory walks the served filesystem and keeps ZIP entry names relative.
-func collectFilesFromDirectory(root *os.Root, dir string) ([]fileInfo, error) {
+func collectFilesFromDirectory(ctx context.Context, budget *workBudget, root *os.Root, dir string) ([]fileInfo, error) {
 	var matches []fileInfo
 	dirName := downloadDirectoryName(root, dir)
-	err := walkVisibleDir(root, dir, func(entry visibleEntry) bool {
+	err := walkVisibleDir(ctx, budget, root, dir, func(entry visibleEntry) (bool, error) {
 		if !entry.info.Mode().IsRegular() || strings.HasPrefix(path.Base(entry.name), ".") {
-			return true
+			return true, nil
 		}
 		relativePath := entry.name
 		if dir != "." {
@@ -2242,19 +2307,23 @@ func collectFilesFromDirectory(root *os.Root, dir string) ([]fileInfo, error) {
 			virtualPath:  "/" + entry.name,
 			relativePath: path.Join(dirName, relativePath),
 		})
-		return true
+		return true, nil
 	})
-	return matches, err
+	if err != nil {
+		return nil, err
+	}
+	return matches, nil
 }
 
-func sendZipArchive(w http.ResponseWriter, root *os.Root, files []fileInfo, filename string) {
+func sendZipArchive(ctx context.Context, w http.ResponseWriter, root *os.Root, files []fileInfo, filename string) error {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 
-	zipWriter := zip.NewWriter(w)
-	defer func() { _ = zipWriter.Close() }()
-
+	zipWriter := zip.NewWriter(contextWriter{ctx, w})
 	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		source, info, err := openVisibleFile(root, rootedName(file.virtualPath))
 		if err != nil {
 			continue
@@ -2269,62 +2338,75 @@ func sendZipArchive(w http.ResponseWriter, root *os.Root, files []fileInfo, file
 
 		entry, err := zipWriter.CreateHeader(header)
 		if err == nil {
-			_, _ = io.Copy(entry, source)
+			_, err = io.Copy(entry, contextReader{ctx, source})
 		}
 		_ = source.Close()
+		if err != nil {
+			return err
+		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return zipWriter.Close()
 }
 
 // buildTree renders the visible children of a directory and their descendants.
-func buildTree(root *os.Root, result *strings.Builder, dir, prefix string, showHidden bool, maxDepth int) (int, int, error) {
-	if maxDepth == 0 {
-		return 0, 0, nil
-	}
-	entries, err := visibleChildren(root, dir)
-	if err != nil {
-		return 0, 0, err
-	}
+func buildTree(ctx context.Context, budget *workBudget, root *os.Root, result *boundedText, dir string, showHidden bool, maxDepth int) (int, int, error) {
+	var render func(string, string, int) (int, int, error)
+	render = func(dir, prefix string, depth int) (int, int, error) {
+		if depth == maxDepth {
+			return 0, 0, nil
+		}
+		if depth == maxWalkDepth {
+			return 0, 0, errWorkLimit
+		}
+		entries, readErr := visibleChildren(ctx, budget, root, dir)
+		if !showHidden {
+			shown := entries[:0]
+			for _, entry := range entries {
+				if !strings.HasPrefix(path.Base(entry.name), ".") {
+					shown = append(shown, entry)
+				}
+			}
+			entries = shown
+		}
+		// Keep each group alphabetical and show directories before files.
+		sort.SliceStable(entries, func(i, j int) bool {
+			return entries[i].descend && !entries[j].descend
+		})
 
-	if !showHidden {
-		shown := entries[:0]
-		for _, entry := range entries {
-			if !strings.HasPrefix(path.Base(entry.name), ".") {
-				shown = append(shown, entry)
+		var dirCount, fileCount int
+		for i, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return dirCount, fileCount, err
+			}
+			connector := "├── "
+			childPrefix := prefix + "│   "
+			if i == len(entries)-1 {
+				connector = "└── "
+				childPrefix = prefix + "    "
+			}
+			if err := result.line(prefix + connector + colorizeName(entry.info, path.Base(entry.name))); err != nil {
+				return dirCount, fileCount, err
+			}
+			if !entry.descend {
+				fileCount++
+				continue
+			}
+			dirCount++
+			if readErr == nil {
+				dirs, files, err := render(entry.name, childPrefix, depth+1)
+				if stopWork(err) {
+					return dirCount, fileCount, err
+				}
+				dirCount += dirs
+				fileCount += files
 			}
 		}
-		entries = shown
+		return dirCount, fileCount, readErr
 	}
-	// Keep each group alphabetical and show directories before files.
-	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].descend && !entries[j].descend
-	})
-	if maxDepth > 0 {
-		maxDepth--
-	}
-
-	dirCount := 0
-	fileCount := 0
-
-	for i, entry := range entries {
-		connector := "├── "
-		childPrefix := prefix + "│   "
-		if i == len(entries)-1 {
-			connector = "└── "
-			childPrefix = prefix + "    "
-		}
-		result.WriteString(prefix + connector + colorizeName(entry.info, path.Base(entry.name)) + "\n")
-
-		if entry.descend {
-			dirCount++
-			subDirCount, subFileCount, _ := buildTree(root, result, entry.name, childPrefix, showHidden, maxDepth)
-			dirCount += subDirCount
-			fileCount += subFileCount
-		} else {
-			fileCount++
-		}
-	}
-
-	return dirCount, fileCount, nil
+	return render(dir, "", 0)
 }
 
 func urlEscapeVirtual(v string) string {
@@ -2338,6 +2420,15 @@ func urlEscapeVirtual(v string) string {
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
+	ctx := r.Context()
+	pathArg, dir, pattern := query.Get("path"), query.Get("dir"), query.Get("pattern")
+	if pathArg == "" && (dir != "" || pattern != "") {
+		release := s.reserveWork(w, r)
+		if release == nil {
+			return
+		}
+		defer release()
+	}
 	root, err := os.OpenRoot(s.rootAbs)
 	if err != nil {
 		http.NotFound(w, r)
@@ -2345,12 +2436,12 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = root.Close() }()
 
-	if filePath := query.Get("path"); filePath != "" {
-		serveDownloadFile(w, r, root, rootedName(filePath), true)
+	if pathArg != "" {
+		serveDownloadFile(w, r, root, rootedName(pathArg), true)
 		return
 	}
 
-	if dir := query.Get("dir"); dir != "" {
+	if dir != "" {
 		name := rootedName(dir)
 		info, err := visibleInfo(root, name)
 		if err != nil {
@@ -2361,16 +2452,15 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not a directory", http.StatusBadRequest)
 			return
 		}
-		files, err := collectFilesFromDirectory(root, name)
-		if err != nil {
-			http.Error(w, "failed to collect files", http.StatusInternalServerError)
+		files, err := collectFilesFromDirectory(ctx, newWorkBudget(), root, name)
+		if ctx.Err() != nil || writeArchivePreparationError(w, err) {
 			return
 		}
-		sendZipArchive(w, root, files, downloadDirectoryName(root, name)+".zip")
+		_ = sendZipArchive(ctx, w, root, files, downloadDirectoryName(root, name)+".zip")
 		return
 	}
 
-	if pattern := query.Get("pattern"); pattern != "" {
+	if pattern != "" {
 		cwd := query.Get("cwd")
 		if cwd == "" && !path.IsAbs(pattern) {
 			sess := s.acquireSession(w, r)
@@ -2380,28 +2470,44 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			defer s.releaseSession(sess)
 			cwd = sess.workingDirectory()
 		}
-		files, err := collectFilesForDownload(root, cwd, pattern)
+		files, err := collectFilesForDownload(ctx, newWorkBudget(), root, cwd, pattern)
+		if ctx.Err() != nil {
+			return
+		}
 		if errors.Is(err, fs.ErrNotExist) || (err == nil && len(files) == 0) {
 			http.Error(w, "no matching files found", http.StatusNotFound)
 			return
 		}
-		if err != nil {
-			http.Error(w, "failed to collect files", http.StatusInternalServerError)
+		if writeArchivePreparationError(w, err) {
 			return
 		}
-		sendZipArchive(w, root, files, "archive.zip")
+		_ = sendZipArchive(ctx, w, root, files, "archive.zip")
 		return
 	}
 
 	http.Error(w, "missing download parameters", http.StatusBadRequest)
 }
 
+func writeArchivePreparationError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, errWorkLimit) {
+		http.Error(w, errWorkLimit.Error(), http.StatusUnprocessableEntity)
+	} else if err != nil {
+		http.Error(w, "failed to collect files", http.StatusInternalServerError)
+	}
+	return err != nil
+}
+
 func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	var req completeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if !s.readCommandRequest(w, r, &req) {
 		return
 	}
+	release := s.reserveWork(w, r)
+	if release == nil {
+		return
+	}
+	defer release()
+	ctx := r.Context()
 
 	arg := req.Path
 	// Split into dir part + base (prefix)
@@ -2433,17 +2539,25 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 	defer func() { _ = root.Close() }()
 	base := rootedName(baseV)
-	ents, err := readVisibleDir(root, base)
-	if err != nil {
+	budget := newWorkBudget()
+	ents, err := readVisibleDir(ctx, budget, root, base)
+	if ctx.Err() != nil {
+		return
+	}
+	truncated := errors.Is(err, errWorkLimit)
+	if err != nil && !truncated {
 		_ = json.NewEncoder(w).Encode(completeResp{Items: nil})
 		return
 	}
 
 	showHidden := strings.HasPrefix(basePart, ".")
-	maxItems := 200
+	const maxItems = 200
 	items := make([]completeItem, 0, 16)
 
 	for _, e := range ents {
+		if ctx.Err() != nil {
+			return
+		}
 		name := e.Name()
 		if !strings.HasPrefix(name, basePart) {
 			continue
@@ -2452,7 +2566,12 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		info, err := visibleInfo(root, path.Join(base, name))
+		child, err := budget.childName(base, name)
+		if err != nil {
+			truncated = true
+			break
+		}
+		info, err := visibleInfo(root, child)
 		if err != nil {
 			continue
 		}
@@ -2470,10 +2589,11 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		items = append(items, completeItem{Name: name, Dir: isDir})
-		if len(items) >= maxItems {
+		if len(items) == maxItems {
+			truncated = true
 			break
 		}
+		items = append(items, completeItem{Name: name, Dir: isDir})
 	}
 
 	// Sort: directories first, then files; alphabetical within each
@@ -2484,7 +2604,7 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return items[i].Name < items[j].Name
 	})
 
-	_ = json.NewEncoder(w).Encode(completeResp{Items: items})
+	_ = json.NewEncoder(w).Encode(completeResp{Items: items, Truncated: truncated})
 }
 
 // ===== Main =====
@@ -2588,29 +2708,13 @@ func main() {
 	go s.runSessionCleanup(background)
 	s.startSitemapGenerator(background, time.Duration(*sitemapInterval)*time.Minute)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/config", s.handleConfig)
-	mux.HandleFunc("/api/exec", s.handleExec)
-	mux.HandleFunc("/api/complete", s.handleComplete)
-	mux.HandleFunc("/api/download", s.handleDownload)
-	mux.HandleFunc("/api/static/", s.handleStaticFile)
-	mux.HandleFunc("/sitemap.xml", s.handleSitemap)
-	// Vendored JavaScript dependencies
-	mux.HandleFunc("/assets/js/marked.min.js", s.handleVendoredMarked)
-	mux.HandleFunc("/assets/js/datastar.js", s.handleVendoredDatastar)
-	mux.HandleFunc("/", s.handleIndex) // Catch-all route must be last
-
 	fmt.Printf("Serving %s on http://%s  (cat max = %d bytes)\n", rootAbs, *addr, *catMax)
 	if s.logfile != "" {
 		fmt.Printf("Logging to: %s\n", s.logfile)
 	} else {
 		fmt.Println("Logging disabled (use -logfile or LSGET_LOGFILE to enable)")
 	}
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           logRequests(mux),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	srv := s.httpServer(*addr)
 
 	// Handle graceful shutdown
 	c := make(chan os.Signal, 1)

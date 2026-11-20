@@ -452,6 +452,7 @@ func TestHandleComplete_Basic(t *testing.T) {
 	b2, _ := json.Marshal(req2)
 	w2 := httptest.NewRecorder()
 	r2 := httptest.NewRequest("POST", "/api/complete", strings.NewReader(string(b2)))
+	r2.Header.Set("Content-Type", "application/json")
 	r2.AddCookie(cookies[0])
 	s.handleComplete(w2, r2)
 	if w2.Code != 200 {
