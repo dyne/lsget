@@ -213,14 +213,15 @@ func TestCollectFilesForDownload_DotAndSubPattern(t *testing.T) {
 	}
 
 	// dot -> collect directory
-	files, err := s.collectFilesForDownload("/sub", ".")
+	root := openTestDownloadRoot(t, s.rootAbs)
+	files, err := collectFilesForDownload(root, "/sub", ".")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("dot collect: %v %v", err, files)
 	}
 
 	// subdir pattern
-	files2, err := s.collectFilesForDownload("/", "sub/*.txt")
-	if err != nil || len(files2) != 1 || !strings.HasSuffix(files2[0].realPath, "a.txt") {
+	files2, err := collectFilesForDownload(root, "/", "sub/*.txt")
+	if err != nil || len(files2) != 1 || files2[0].virtualPath != "/sub/a.txt" {
 		t.Fatalf("sub pattern: %v %#v", err, files2)
 	}
 }
@@ -233,9 +234,9 @@ func TestSendZipArchive_Content(t *testing.T) {
 	f2 := filepath.Join(s.rootAbs, "b.txt")
 	_ = os.WriteFile(f1, []byte("A"), 0o644)
 	_ = os.WriteFile(f2, []byte("BB"), 0o644)
-	files := []fileInfo{{realPath: f1, relativePath: "a.txt"}, {realPath: f2, relativePath: "b.txt"}}
+	files := []fileInfo{{virtualPath: "/a.txt", relativePath: "a.txt"}, {virtualPath: "/b.txt", relativePath: "b.txt"}}
 	w := httptest.NewRecorder()
-	s.sendZipArchive(w, files, "test.zip")
+	sendZipArchive(w, openTestDownloadRoot(t, s.rootAbs), files, "test.zip")
 	if ct := w.Result().Header.Get("Content-Type"); ct != "application/zip" {
 		t.Fatalf("ctype: %q", ct)
 	}
