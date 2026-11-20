@@ -35,8 +35,7 @@ func TestRenderHelp(t *testing.T) {
 	}
 }
 
-func TestCleanJoinRealFromVirtual(t *testing.T) {
-	s := newTestServer(t)
+func TestCleanJoinVirtual(t *testing.T) {
 	// cleanVirtual
 	if cleanVirtual("") != "/" {
 		t.Fatal("cleanVirtual empty -> /")
@@ -51,14 +50,12 @@ func TestCleanJoinRealFromVirtual(t *testing.T) {
 	if joinVirtual("/a", "/x") != "/x" {
 		t.Fatal("join absolute wins")
 	}
-	// realFromVirtual root
-	r, err := s.realFromVirtual("/")
-	if err != nil || r != s.rootAbs {
-		t.Fatalf("realFromVirtual root: %v %q", err, r)
+	if p := rootedName("/"); p != "." {
+		t.Fatalf("rooted filesystem name for / = %q", p)
 	}
 	// ensure normalization keeps within root
-	if p, err := s.realFromVirtual("/../etc"); err != nil || !strings.HasPrefix(p, s.rootAbs) {
-		t.Fatal("realFromVirtual should keep within root")
+	if p := rootedName("/../etc"); p != "etc" {
+		t.Fatalf("rooted filesystem name for /../etc = %q", p)
 	}
 }
 

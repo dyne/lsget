@@ -585,7 +585,7 @@ func TestNoJSHTMLEscaping(t *testing.T) {
 
 	r := httptest.NewRequest("GET", "/?nojs=1", nil)
 	w := httptest.NewRecorder()
-	s.serveNoJSDirectory(w, r, "/")
+	s.handleIndex(w, r)
 	if w.Code != 200 {
 		t.Fatalf("nojs status: %d", w.Code)
 	}
