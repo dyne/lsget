@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -334,6 +335,9 @@ type server struct {
 	mu       sync.RWMutex
 	logfile  string // path to log file for statistics
 	baseURL  string // optional: public base URL (e.g., https://files.example.com) - auto-detects from request if empty
+
+	sitemapMu sync.Mutex
+	sitemap   atomic.Pointer[sitemapSnapshot]
 }
 
 func newServer(rootAbs string, catMax int64, logfile, baseURL string) *server {
@@ -430,28 +434,66 @@ type sitemapEntry struct {
 	fileSize    int64
 }
 
-// generateSitemap creates a sitemap.xml file in the root directory
-func (s *server) generateSitemap() error {
-	if s.baseURL == "" {
-		return nil
+type sitemapSnapshot struct {
+	content     string
+	generatedAt time.Time
+}
+
+func (s *server) getSitemap(refresh bool) (*sitemapSnapshot, error) {
+	if cached := s.sitemap.Load(); cached != nil && !refresh {
+		return cached, nil
 	}
 
-	var entries []sitemapEntry
-	err := filepath.Walk(s.rootAbs, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
+	s.sitemapMu.Lock()
+	defer s.sitemapMu.Unlock()
+	if cached := s.sitemap.Load(); cached != nil && !refresh {
+		return cached, nil
+	}
 
-		if s.shouldIgnore(path, filepath.Base(path)) {
-			if info.IsDir() {
-				return filepath.SkipDir
+	content, err := s.generateSitemap()
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &sitemapSnapshot{content: content, generatedAt: time.Now()}
+	s.sitemap.Store(snapshot)
+	return snapshot, nil
+}
+
+// generateSitemap builds the XML from the files currently in the served root.
+func (s *server) generateSitemap() (string, error) {
+	root, err := os.OpenRoot(s.rootAbs)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = root.Close() }()
+
+	files := root.FS()
+	var entries []sitemapEntry
+	err = fs.WalkDir(files, ".", func(name string, file fs.DirEntry, err error) error {
+		if err != nil {
+			if name == "." {
+				return err
 			}
 			return nil
 		}
 
-		vp, err := s.virtualFromReal(path)
-		if err != nil {
+		if name == "sitemap.xml" || matchesIgnoreRules(files, name, file.Name(), false) {
+			if file.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
+		}
+
+		info, err := file.Info()
+		if err != nil {
+			if name == "." {
+				return err
+			}
+			return nil
+		}
+		vp := "/"
+		if name != "." {
+			vp = "/" + name
 		}
 
 		// Format lastmod in W3C Datetime format (ISO 8601)
@@ -466,7 +508,7 @@ func (s *server) generateSitemap() error {
 		// Check file category for special handling
 		if !info.IsDir() {
 			entry.fileSize = info.Size()
-			category := getFileCategory(filepath.Base(path))
+			category := getFileCategory(file.Name())
 			switch category {
 			case FileCategoryImage:
 				entry.isImage = true
@@ -485,7 +527,7 @@ func (s *server) generateSitemap() error {
 	})
 
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Build XML with proper namespaces
@@ -541,29 +583,33 @@ func (s *server) generateSitemap() error {
 
 	xml.WriteString("</urlset>\n")
 
-	sitemapPath := filepath.Join(s.rootAbs, "sitemap.xml")
-	return os.WriteFile(sitemapPath, []byte(xml.String()), 0644)
+	return xml.String(), nil
 }
 
 // startSitemapGenerator starts periodic sitemap regeneration
-func (s *server) startSitemapGenerator(intervalMinutes int) {
-	if intervalMinutes <= 0 || s.baseURL == "" {
+func (s *server) startSitemapGenerator(ctx context.Context, interval time.Duration) {
+	if interval <= 0 || s.baseURL == "" {
 		return
 	}
 
-	if err := s.generateSitemap(); err != nil {
+	if _, err := s.getSitemap(true); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to generate initial sitemap: %v\n", err)
 	} else {
-		fmt.Printf("Generated sitemap.xml (%s/sitemap.xml)\n", s.rootAbs)
+		fmt.Println("Generated sitemap.xml in memory")
 	}
 
 	go func() {
-		ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			if err := s.generateSitemap(); err != nil {
-				fmt.Fprintf(os.Stderr, "failed to regenerate sitemap: %v\n", err)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := s.getSitemap(true); err != nil {
+					fmt.Fprintf(os.Stderr, "failed to regenerate sitemap: %v\n", err)
+				}
 			}
 		}
 	}()
@@ -697,17 +743,6 @@ func (s *server) realFromVirtual(v string) (string, error) {
 		return "", errors.New("permission denied")
 	}
 	return abs, nil
-}
-
-func (s *server) virtualFromReal(realPath string) (string, error) {
-rel, err := filepath.Rel(s.rootAbs, realPath)
-if err != nil {
-return "", err
-}
-if rel == "." {
-return "/", nil
-}
-return "/" + filepath.ToSlash(rel), nil
 }
 
 // simple args parser: supports quotes ("", ”) and backslash escapes inside quotes
@@ -1157,25 +1192,32 @@ func (s *server) processHTMLTemplate(htmlContent []byte, requestPath string) []b
 }
 
 func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
-	sitemapPath := filepath.Join(s.rootAbs, "sitemap.xml")
-
-	// Check if sitemap exists
-	if _, err := os.Stat(sitemapPath); os.IsNotExist(err) {
-		// Generate on-demand if not exists
-		if s.baseURL != "" {
-			if err := s.generateSitemap(); err != nil {
-				http.Error(w, "Failed to generate sitemap", http.StatusInternalServerError)
-				return
-			}
-		} else {
-			http.Error(w, "Sitemap not configured (missing -baseurl flag)", http.StatusNotFound)
+	if s.baseURL == "" {
+		// Allow a manually maintained sitemap when automatic generation is unconfigured.
+		root, err := os.OpenRoot(s.rootAbs)
+		if err != nil {
+			http.NotFound(w, r)
 			return
 		}
+		defer func() { _ = root.Close() }()
+		file, info, err := openDownloadFile(root, "sitemap.xml")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer func() { _ = file.Close() }()
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		http.ServeContent(w, r, "sitemap.xml", info.ModTime(), file)
+		return
 	}
 
-	// Serve the file
+	snapshot, err := s.getSitemap(false)
+	if err != nil {
+		http.Error(w, "Failed to generate sitemap", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	http.ServeFile(w, r, sitemapPath)
+	http.ServeContent(w, r, "sitemap.xml", snapshot.generatedAt, strings.NewReader(snapshot.content))
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -2464,7 +2506,7 @@ func main() {
 		pidFileFlag     = flag.String("pid", getEnvOrDefault("LSGET_PID", ""), "path to PID file (env: LSGET_PID)")
 		logfileFlag     = flag.String("logfile", getEnvOrDefault("LSGET_LOGFILE", ""), "path to log file for statistics (env: LSGET_LOGFILE)")
 		baseURL         = flag.String("baseurl", getEnvOrDefault("LSGET_BASEURL", ""), "base URL for the site - full URL without trailing slash (e.g., https://files.example.com) (env: LSGET_BASEURL)")
-		sitemapInterval = flag.Int("sitemap", getEnvOrDefaultInt("LSGET_SITEMAP", 0), "generate sitemap.xml every N minutes (0 = disabled) (env: LSGET_SITEMAP)")
+		sitemapInterval = flag.Int("sitemap", getEnvOrDefaultInt("LSGET_SITEMAP", 0), "refresh the in-memory sitemap every N minutes (0 = on demand only) (env: LSGET_SITEMAP)")
 	)
 	flag.Parse()
 
@@ -2498,42 +2540,6 @@ func main() {
 
 	s := newServer(rootAbs, *catMax, *logfileFlag, *baseURL)
 
-	// Special case: if sitemap is 0 and baseURL is set, generate once and exit
-	if *sitemapInterval != 0 && *baseURL != "" {
-		fmt.Println("=== Generating sitemap (debug mode) ===")
-		fmt.Printf("Base URL: %s\n", *baseURL)
-		fmt.Printf("Root directory: %s\n", rootAbs)
-
-		if err := s.generateSitemap(); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to generate sitemap: %v\n", err)
-			exitFunc(1)
-		}
-
-		sitemapPath := filepath.Join(rootAbs, "sitemap.xml")
-		info, err := os.Stat(sitemapPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to stat sitemap: %v\n", err)
-			exitFunc(1)
-		}
-
-		fmt.Printf("✓ Sitemap generated successfully: %s (%d bytes)\n", sitemapPath, info.Size())
-
-		// Show first few lines
-		content, err := os.ReadFile(sitemapPath)
-		if err == nil {
-			lines := strings.Split(string(content), "\n")
-			fmt.Println("\n=== Sitemap preview (first 10 lines) ===")
-			for i := 0; i < len(lines) && i < 10; i++ {
-				fmt.Println(lines[i])
-			}
-			if len(lines) > 10 {
-				fmt.Printf("... (%d more lines)\n", len(lines)-10)
-			}
-		}
-
-		exitFunc(0)
-	}
-
 	// Create PID file if specified
 	if *pidFileFlag != "" {
 		pid := os.Getpid()
@@ -2547,9 +2553,9 @@ func main() {
 	}
 
 	// Start sitemap generator if configured
-	if *sitemapInterval > 0 {
-		s.startSitemapGenerator(*sitemapInterval)
-	}
+	sitemapContext, cancelSitemap := context.WithCancel(context.Background())
+	defer cancelSitemap()
+	s.startSitemapGenerator(sitemapContext, time.Duration(*sitemapInterval)*time.Minute)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", s.handleConfig)

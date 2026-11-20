@@ -140,7 +140,7 @@ Usage of ./lsget:
   -pid string
         path to PID file
   -sitemap int
-        generate sitemap.xml every N minutes (0 = disabled)
+        refresh the in-memory sitemap every N minutes (0 = on demand only)
   -version
         Print the version of this software and exits
 ```
@@ -157,7 +157,13 @@ All configuration flags can also be set via environment variables with the `LSGE
 | `LSGET_PID` | `-pid` | Path to PID file | `LSGET_PID=/var/run/lsget.pid` |
 | `LSGET_LOGFILE` | `-logfile` | Path to log file for statistics | `LSGET_LOGFILE=/var/log/lsget.log` |
 | `LSGET_BASEURL` | `-baseurl` | **Optional:** Public URL (see below) | `LSGET_BASEURL=https://files.example.com` |
-| `LSGET_SITEMAP` | `-sitemap` | Sitemap generation interval (minutes) | `LSGET_SITEMAP=60` |
+| `LSGET_SITEMAP` | `-sitemap` | In-memory sitemap refresh interval (minutes) | `LSGET_SITEMAP=60` |
+
+#### Sitemap
+
+Set `LSGET_BASEURL` to generate `/sitemap.xml` with canonical URLs. The server keeps the generated XML in memory, so the served directory can be read-only. A positive `LSGET_SITEMAP` interval generates the sitemap at startup and refreshes it periodically. With the default interval of `0`, the first request generates the sitemap and the server caches it for its lifetime.
+
+Without `LSGET_BASEURL`, you can serve a manually maintained `sitemap.xml` from the served directory.
 
 #### About LSGET_ADDR vs LSGET_BASEURL
 
