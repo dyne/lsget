@@ -25,7 +25,7 @@ func makeTempDir(t *testing.T) string {
 
 func newTestServer(t *testing.T) *server {
 	root := makeTempDir(t)
-	return newServer(root, 4*1024, "","") // small catMax for tests
+	return newServer(root, 4*1024, "", "") // small catMax for tests
 }
 
 func TestRenderHelp(t *testing.T) {
@@ -188,7 +188,7 @@ func TestNewSIDAndGetSession(t *testing.T) {
 func TestProcessHTMLTemplate(t *testing.T) {
 	s := newTestServer(t)
 	html := []byte("<html>{{HELP_MESSAGE}}::{{INITIAL_PATH}}</html>")
-	out := s.processHTMLTemplate(html, "/foo/bar")
+	out := s.processHTMLTemplate(html, "/foo/bar", "")
 	so := string(out)
 	if strings.Contains(so, "{{HELP_MESSAGE}}") {
 		t.Fatal("HELP_MESSAGE not replaced")

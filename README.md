@@ -123,6 +123,14 @@ A file in the served directory can be shared by its path, such as `/eudi/report.
 
 Direct file links and terminal downloads respect `.lsgetignore` rules on files and their parent directories. ZIP downloads omit ignored entries. Downloads can follow symlinks that resolve within the served root.
 
+### Application shell and published websites
+
+The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
+
+A visible `index.html` in a served directory takes precedence over the terminal, including when the development template is enabled. Published HTML and its assets keep their own serving behavior. Active content hosted on the same origin can interact with the terminal and its APIs using the visitor’s browser session. Serve sites from a separate origin when their authors are outside the terminal’s trust boundary.
+
+The embedded terminal enforces a CSP. Each response supplies a nonce for its scripts and stylesheet, API requests stay on the same origin, and README images can use HTTP or HTTPS. Datastar compiles the shell’s `data-*` expressions with JavaScript’s `Function` constructor, so the enforced policy permits `'unsafe-eval'`. To trial a stricter policy on a development or staging listener, set `-shell-csp report-only`. This mode issues the proposed policy without `'unsafe-eval'` as a report-only header. Browser developer tools show the expected Datastar violations. Use the default `enforce` mode for deployments. The shell policy applies to the embedded terminal response. Published documents, files, and the generated `?nojs=1` directory listing keep their own response behavior.
+
 ### Configuration flags
 ```
 ./lsget -h
@@ -133,12 +141,16 @@ Usage of ./lsget:
         base URL for the site (e.g., https://files.example.com)
   -catmax cat
         max bytes printable via cat and used by completion (default 4096)
+  -dev-template string
+        use a local application template for development
   -dir string
         directory to expose as root (default ".")
   -logfile string
         path to log file for statistics
   -pid string
         path to PID file
+  -shell-csp string
+        application CSP mode: enforce or report-only (default "enforce")
   -sitemap int
         refresh the in-memory sitemap every N minutes (0 = on demand only)
   -version
@@ -154,9 +166,11 @@ All configuration flags can also be set via environment variables with the `LSGE
 | `LSGET_ADDR` | `-addr` | Address to listen on (bind address) | `LSGET_ADDR=0.0.0.0:8080` |
 | `LSGET_DIR` | `-dir` | Directory to expose as root | `LSGET_DIR=/var/www/files` |
 | `LSGET_CATMAX` | `-catmax` | Max bytes for cat command | `LSGET_CATMAX=8192` |
+| `LSGET_DEV_TEMPLATE` | `-dev-template` | Local development template | `LSGET_DEV_TEMPLATE=./index.html` |
 | `LSGET_PID` | `-pid` | Path to PID file | `LSGET_PID=/var/run/lsget.pid` |
 | `LSGET_LOGFILE` | `-logfile` | Path to log file for statistics | `LSGET_LOGFILE=/var/log/lsget.log` |
 | `LSGET_BASEURL` | `-baseurl` | **Optional:** Public URL (see below) | `LSGET_BASEURL=https://files.example.com` |
+| `LSGET_SHELL_CSP` | `-shell-csp` | Embedded application CSP mode | `LSGET_SHELL_CSP=enforce` |
 | `LSGET_SITEMAP` | `-sitemap` | In-memory sitemap refresh interval (minutes) | `LSGET_SITEMAP=60` |
 
 #### Sitemap
