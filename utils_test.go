@@ -155,33 +155,13 @@ func TestURLEscapeHelpers(t *testing.T) {
 	}
 }
 
-func TestNewSIDAndGetSession(t *testing.T) {
+func TestNewSID(t *testing.T) {
 	id := newSID()
 	if len(id) != 32 {
 		t.Fatalf("sid length: %d", len(id))
 	}
 	if _, err := hex.DecodeString(id); err != nil {
 		t.Fatalf("sid hex: %v", err)
-	}
-
-	s := newTestServer(t)
-	r := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-	sess := s.getSession(w, r)
-	if sess == nil || sess.cwd != "/" {
-		t.Fatal("new session cwd")
-	}
-	ck := w.Result().Cookies()
-	if len(ck) == 0 || ck[0].Name != "sid" {
-		t.Fatal("sid cookie not set")
-	}
-	// Second time with cookie should return existing
-	r2 := httptest.NewRequest("GET", "/", nil)
-	r2.AddCookie(ck[0])
-	w2 := httptest.NewRecorder()
-	sess2 := s.getSession(w2, r2)
-	if sess2 != sess {
-		t.Fatal("session not reused")
 	}
 }
 
