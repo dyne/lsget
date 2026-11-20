@@ -197,8 +197,8 @@ func makeArtifactTarball(t *testing.T) []byte {
 }
 
 func TestArtifactArchiveFinalization(t *testing.T) {
-	logPath := captureArchiveLog(t)
 	s := newTestServer(t)
+	logPath := captureArchiveLog(t, s)
 	// The compressed archive fits in the ZIP writer's buffer until Close.
 	writeWorkFixture(t, s.rootAbs, "release/README.txt", []byte("small release fixture"))
 	handler := s.httpServer("").Handler
@@ -226,7 +226,7 @@ func TestArtifactArchiveFinalization(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("ZIP handler did not settle")
 	}
-	checkArchiveFailureLog(t, logPath, "/api/download?pattern=/release/*.txt", "finalize ZIP", errArchiveFixtureWrite.Error())
+	checkArchiveFailureLog(t, logPath, "GET /api/download HTTP/1.1", "finalize ZIP", errArchiveFixtureWrite.Error())
 }
 
 func TestArtifactArchiveMissingEntry(t *testing.T) {
@@ -249,12 +249,10 @@ func (w *rejectArchiveWriter) Write([]byte) (int, error) {
 	return 0, errArchiveFixtureWrite
 }
 
-func captureArchiveLog(t *testing.T) string {
+func captureArchiveLog(t *testing.T, s *server) string {
 	t.Helper()
-	old := logFile
-	logFile = filepath.Join(t.TempDir(), "access.log")
-	t.Cleanup(func() { logFile = old })
-	return logFile
+	s.logfile = filepath.Join(t.TempDir(), "access.log")
+	return s.logfile
 }
 
 func checkArchiveFailureLog(t *testing.T, logPath string, causes ...string) {

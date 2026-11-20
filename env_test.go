@@ -1,135 +1,155 @@
 package main
 
 import (
-	"fmt"
+	"bytes"
+	"io"
 	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
-func TestEnvironmentVariables(t *testing.T) {
+func TestParseConfig(t *testing.T) {
+	defaults := config{addr: "localhost:8080", dir: ".", catMax: 4096, shellCSP: "enforce"}
 	tests := []struct {
-		name     string
-		envKey   string
-		envValue string
-		expected string
+		name string
+		args []string
+		env  map[string]string
+		want config
 	}{
-		{"LSGET_ADDR", "LSGET_ADDR", "0.0.0.0:9090", "0.0.0.0:9090"},
-		{"LSGET_DIR", "LSGET_DIR", "/custom/path", "/custom/path"},
-		{"LSGET_LOGFILE", "LSGET_LOGFILE", "/var/log/test.log", "/var/log/test.log"},
-		{"LSGET_BASEURL", "LSGET_BASEURL", "https://test.example.com", "https://test.example.com"},
-		{"LSGET_PID", "LSGET_PID", "/var/run/test.pid", "/var/run/test.pid"},
+		{name: "defaults", want: defaults},
+		{
+			name: "environment",
+			env: map[string]string{
+				"LSGET_ADDR": "0.0.0.0:9090", "LSGET_DIR": "data", "LSGET_CATMAX": "08200", "LSGET_DEV_TEMPLATE": "dev.html",
+				"LSGET_SHELL_CSP": "report-only", "LSGET_SECURE_SESSION_COOKIE": "true", "LSGET_PID": "state/lsget.pid",
+				"LSGET_LOGFILE": "state/access.log", "LSGET_BASEURL": "https://files.example:8443/releases%20here", "LSGET_SITEMAP": "60",
+			},
+			want: config{
+				addr: "0.0.0.0:9090", dir: "data", catMax: 8200, devTemplate: "dev.html", shellCSP: "report-only", secureSessionCookie: true,
+				pidFile: "state/lsget.pid", logFile: "state/access.log", baseURL: "https://files.example:8443/releases%20here", sitemapInterval: time.Hour,
+			},
+		},
+		{
+			name: "flags override environment even when empty false zero or the environment is invalid",
+			args: []string{"-addr", "127.0.0.1:0", "-dir", "cli", "-catmax=0", "-dev-template=", "-shell-csp=enforce",
+				"-secure-session-cookie=false", "-pid=", "-logfile=", "-baseurl=", "-sitemap=0"},
+			env: map[string]string{
+				"LSGET_ADDR": "missing port", "LSGET_DIR": "env", "LSGET_CATMAX": "invalid", "LSGET_DEV_TEMPLATE": "env.html",
+				"LSGET_SHELL_CSP": "invalid", "LSGET_SECURE_SESSION_COOKIE": "invalid", "LSGET_PID": "env.pid",
+				"LSGET_LOGFILE": "env.log", "LSGET_BASEURL": "http://%", "LSGET_SITEMAP": "invalid",
+			},
+			want: config{addr: "127.0.0.1:0", dir: "cli", shellCSP: "enforce"},
+		},
+		{
+			name: "empty environment entries use defaults",
+			env:  map[string]string{"LSGET_ADDR": "", "LSGET_CATMAX": "", "LSGET_SITEMAP": "", "LSGET_SECURE_SESSION_COOKIE": ""},
+			want: defaults,
+		},
+		{
+			name: "zero size and interval from environment",
+			env:  map[string]string{"LSGET_CATMAX": "0", "LSGET_SITEMAP": "0"},
+			want: config{addr: defaults.addr, dir: defaults.dir, shellCSP: defaults.shellCSP},
+		},
+		{
+			name: "explicit empty bind address and prefixed CLI integer",
+			args: []string{"-addr=", "-catmax=0x2000"},
+			want: config{addr: ":http", dir: defaults.dir, catMax: 8192, shellCSP: defaults.shellCSP},
+		},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set environment variable
-			if err := os.Setenv(tt.envKey, tt.envValue); err != nil {
-				t.Fatalf("Failed to set env var: %v", err)
-			}
-			defer func() {
-				if err := os.Unsetenv(tt.envKey); err != nil {
-					t.Errorf("Failed to unset env var: %v", err)
-				}
-			}()
-
-			// Test string env vars
-			getEnvOrDefault := func(key, defaultValue string) string {
-				if v := os.Getenv(key); v != "" {
-					return v
-				}
-				return defaultValue
-			}
-
-			result := getEnvOrDefault(tt.envKey, "default")
-			if result != tt.expected {
-				t.Errorf("Expected %s=%s, got %s", tt.envKey, tt.expected, result)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseConfig(tc.args, func(key string) string { return tc.env[key] }, io.Discard)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseConfig = (%+v, %v), want %+v", got, err, tc.want)
 			}
 		})
 	}
 }
 
-func TestEnvironmentVariablesInt(t *testing.T) {
+func TestInvalidConfig(t *testing.T) {
 	tests := []struct {
-		name        string
-		envKey      string
-		envValue    string
-		expected    int
-		shouldError bool
+		name   string
+		args   []string
+		key    string
+		value  string
+		want   string
+		hidden string
 	}{
-		{"LSGET_SITEMAP valid", "LSGET_SITEMAP", "60", 60, false},
-		{"LSGET_SITEMAP zero", "LSGET_SITEMAP", "0", 0, false},
-		{"LSGET_SITEMAP large", "LSGET_SITEMAP", "1440", 1440, false},
+		{name: "catmax trailing data", key: "LSGET_CATMAX", value: "1024 MB", want: "LSGET_CATMAX must be a decimal integer"},
+		{name: "catmax exceeds int64", key: "LSGET_CATMAX", value: "9223372036854775808", want: "LSGET_CATMAX"},
+		{name: "negative catmax flag", args: []string{"-catmax=-1"}, key: "LSGET_CATMAX", value: "4096", want: "-catmax must be nonnegative"},
+		{name: "malformed catmax flag", args: []string{"-catmax=no"}, want: "invalid value \"no\" for flag -catmax"},
+		{name: "negative sitemap environment", key: "LSGET_SITEMAP", value: "-1", want: "LSGET_SITEMAP must be between"},
+		{name: "sitemap duration overflow", args: []string{"-sitemap=153722868"}, want: "-sitemap must be between"},
+		{name: "sitemap fractional", key: "LSGET_SITEMAP", value: "1.5", want: "LSGET_SITEMAP must be a decimal integer"},
+		{name: "relative URL", args: []string{"-baseurl=/files"}, want: "-baseurl: invalid sitemap base URL"},
+		{name: "base URL scheme", key: "LSGET_BASEURL", value: "ftp://files.example", want: "LSGET_BASEURL: invalid sitemap base URL"},
+		{name: "base URL query", key: "LSGET_BASEURL", value: "https://files.example/?key=sample-query", want: "LSGET_BASEURL: invalid sitemap base URL", hidden: "sample-query"},
+		{name: "base URL fragment", key: "LSGET_BASEURL", value: "https://files.example/#section", want: "LSGET_BASEURL: invalid sitemap base URL"},
+		{name: "base URL credentials", args: []string{"-baseurl=https://reader:sample-password@files.example"}, want: "-baseurl: invalid sitemap base URL", hidden: "sample-password"},
+		{name: "invalid boolean", key: "LSGET_SECURE_SESSION_COOKIE", value: "yes", want: "invalid LSGET_SECURE_SESSION_COOKIE value"},
+		{name: "invalid CSP", args: []string{"-shell-csp=disabled"}, want: "-shell-csp must be enforce or report-only"},
+		{name: "invalid bind address", key: "LSGET_ADDR", value: "localhost", want: "invalid LSGET_ADDR"},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set environment variable
-			if err := os.Setenv(tt.envKey, tt.envValue); err != nil {
-				t.Fatalf("Failed to set env var: %v", err)
-			}
-			defer func() {
-				if err := os.Unsetenv(tt.envKey); err != nil {
-					t.Errorf("Failed to unset env var: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			exit := runCLI(t.Context(), tc.args, func(key string) string {
+				if key == tc.key {
+					return tc.value
 				}
-			}()
-
-			// Test int env vars
-			getEnvOrDefaultInt := func(key string, defaultValue int) int {
-				if v := os.Getenv(key); v != "" {
-					var result int
-					if _, err := fmt.Sscanf(v, "%d", &result); err == nil {
-						return result
-					}
-				}
-				return defaultValue
+				return ""
+			}, &stdout, &stderr)
+			got := stderr.String()
+			if exit != 2 || stdout.Len() != 0 || !strings.Contains(got, "configuration error: "+tc.want) {
+				t.Fatalf("exit %d, stdout %q, stderr %q, want configuration error %q", exit, &stdout, got, tc.want)
 			}
-
-			result := getEnvOrDefaultInt(tt.envKey, 999)
-			if result != tt.expected {
-				t.Errorf("Expected %s=%d, got %d", tt.envKey, tt.expected, result)
+			if tc.hidden != "" && strings.Contains(got, tc.hidden) {
+				t.Fatalf("configuration error disclosed URL data: %q", got)
 			}
 		})
 	}
 }
 
-func TestEnvironmentVariablesInt64(t *testing.T) {
-	tests := []struct {
-		name     string
-		envKey   string
-		envValue string
-		expected int64
+func TestCLIMetadataFlags(t *testing.T) {
+	for _, tc := range []struct {
+		flag string
+		out  string
+		err  string
 	}{
-		{"LSGET_CATMAX default", "LSGET_CATMAX", "4096", 4096},
-		{"LSGET_CATMAX large", "LSGET_CATMAX", "262144", 262144},
-		{"LSGET_CATMAX zero", "LSGET_CATMAX", "0", 0},
+		{flag: "-version", out: "lsget " + version},
+		{flag: "-help", err: "Usage of lsget:"},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			exit := runCLI(t.Context(), []string{tc.flag}, func(string) string { return "invalid environment" }, &stdout, &stderr)
+			if exit != 0 || !strings.HasPrefix(stdout.String(), tc.out) || !strings.HasPrefix(stderr.String(), tc.err) ||
+				(tc.out == "" && stdout.Len() != 0) || (tc.err == "" && stderr.Len() != 0) {
+				t.Fatalf("exit %d, stdout %q, stderr %q", exit, &stdout, &stderr)
+			}
+		})
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set environment variable
-			if err := os.Setenv(tt.envKey, tt.envValue); err != nil {
-				t.Fatalf("Failed to set env var: %v", err)
-			}
-			defer func() {
-				if err := os.Unsetenv(tt.envKey); err != nil {
-					t.Errorf("Failed to unset env var: %v", err)
-				}
-			}()
-
-			// Test int64 env vars
-			getEnvOrDefaultInt64 := func(key string, defaultValue int64) int64 {
-				if v := os.Getenv(key); v != "" {
-					var result int64
-					if _, err := fmt.Sscanf(v, "%d", &result); err == nil {
-						return result
-					}
-				}
-				return defaultValue
-			}
-
-			result := getEnvOrDefaultInt64(tt.envKey, 999)
-			if result != tt.expected {
-				t.Errorf("Expected %s=%d, got %d", tt.envKey, tt.expected, result)
+func TestCLIInvalidRoot(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(file, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, path, message string }{
+		{"missing", filepath.Join(root, "missing"), "failed to access dir"},
+		{"regular file", file, "dir is not a directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := runCLI(t.Context(), []string{"-dir", tc.path}, func(string) string { return "" }, &stdout, &stderr)
+			if code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "configuration error: "+tc.message) ||
+				!strings.Contains(stderr.String(), tc.path) {
+				t.Fatalf("exit %d, stdout %q, stderr %q", code, &stdout, &stderr)
 			}
 		})
 	}

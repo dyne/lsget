@@ -187,6 +187,8 @@ Usage of ./lsget:
         application CSP mode: enforce or report-only (default "enforce")
   -sitemap int
         refresh the in-memory sitemap every N minutes (0 = on demand only)
+  -trusted-proxies string
+        comma-separated CIDRs allowed to supply forwarded metadata
   -version
         Print the version of this software and exits
 ```
@@ -207,6 +209,11 @@ All configuration flags can also be set via environment variables with the `LSGE
 | `LSGET_BASEURL` | `-baseurl` | **Optional:** Public URL (see below) | `LSGET_BASEURL=https://files.example.com` |
 | `LSGET_SHELL_CSP` | `-shell-csp` | Embedded application CSP mode | `LSGET_SHELL_CSP=enforce` |
 | `LSGET_SITEMAP` | `-sitemap` | In-memory sitemap refresh interval (minutes) | `LSGET_SITEMAP=60` |
+| `LSGET_TRUSTED_PROXIES` | `-trusted-proxies` | CIDRs for trusted HTTP proxies | `LSGET_TRUSTED_PROXIES=10.0.0.4/32,2001:db8::4/128` |
+
+lsget validates configuration before accepting requests. Set `LSGET_CATMAX` and `LSGET_SITEMAP` to nonnegative whole numbers. An access log must be a writable regular file. lsget creates missing log directories when their parent allows it.
+
+Keep the PID file and access log in writable state directories when serving read-only content. lsget creates the PID file exclusively and removes it after shutdown. If a crash leaves a stale PID file, verify that the previous service has exited before removing it and restarting. SIGINT and SIGTERM stop background refreshes and new connections, then give active HTTP requests up to five seconds to finish before closing their connections.
 
 #### Sitemap
 
@@ -231,13 +238,21 @@ These serve different purposes and are kept separate for flexibility:
 - ✅ Running locally for development
 - ✅ Direct access to the server without reverse proxy
 - ✅ Using localhost or direct IP access
-- Auto-detects from request headers (`Host`, `X-Forwarded-Proto`)
+- Share links use the HTTP Host and the connection's TLS scheme
 
 **When you DO need `LSGET_BASEURL`**:
 - 🔧 Behind reverse proxy (Nginx, Caddy, Traefik) with different public URL
 - 🔧 Docker with port mapping to a different domain
 - 🔧 Generating sitemap.xml with specific canonical URLs
 - 🔧 Using `url`/`share` commands for consistent shareable links
+
+#### Proxy metadata and access logs
+
+Set `LSGET_BASEURL` to use the public origin and optional path prefix for share links and generated sitemaps. Set `LSGET_TRUSTED_PROXIES` only to the addresses or networks of proxies you control. Without trusted proxies, the log uses the socket peer address. A trusted peer can supply a single `X-Forwarded-For` list of up to 16 plain IPv4 or IPv6 addresses. lsget walks the list from the right through trusted proxies to the first untrusted address, or uses the leftmost address if every hop is trusted. Missing, repeated, malformed or oversized lists use the socket peer. Configure the edge proxy to remove client-supplied forwarding fields and each later trusted proxy to append its observed peer to the same list.
+
+For share links without a configured base URL, the trusted peer may set one `X-Forwarded-Proto: https` value when forwarding over plain HTTP. Configure that peer to set the public scheme itself. `X-Forwarded-Host` and `Forwarded` are ignored. Forwarded metadata has no effect on browser-origin checks or session cookie settings.
+
+Each request produces one combined-format record on stdout and in the configured access log. Recognized download, share and checksum events also produce one command record in the configured file with the command name, resolved virtual file or archive description, and HTTP status. Request records omit query strings. Logs include the selected IP, request path, bounded user agent and referrer origin. Cookie and Authorization headers, raw terminal input and referrer credentials, paths and queries are omitted. `outcome=canceled`, `outcome=aborted` or `outcome=write_error` identifies interrupted responses, with `000` when no final HTTP status was written. Archive failures retain the `archive=incomplete` marker. Rotate by renaming the log. The next request opens the original path again, and file write failures are reported to stderr at most once per minute.
 
 **Example usage with environment variables:**
 

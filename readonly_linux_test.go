@@ -169,7 +169,33 @@ func configureReadOnlyCommand(cmd *exec.Cmd, work string) {
 	}
 }
 
-func startReadOnlyServer(t *testing.T, binary, work, content, note string, flags ...string) (string, int) {
+type readOnlyProcess struct {
+	*os.Process
+	done    chan struct{}
+	waitErr error
+}
+
+func (p *readOnlyProcess) awaitExit(t *testing.T) {
+	t.Helper()
+	select {
+	case <-p.done:
+		if p.waitErr != nil {
+			t.Errorf("lsget shutdown: %v", p.waitErr)
+		}
+	case <-time.After(8 * time.Second):
+		t.Error("lsget survived the shutdown deadline")
+		if err := p.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill lsget: %v", err)
+		}
+		select {
+		case <-p.done:
+		case <-time.After(2 * time.Second):
+			t.Error("lsget was not reaped after SIGKILL")
+		}
+	}
+}
+
+func startReadOnlyServer(t *testing.T, binary, work, content, note string, flags ...string) (string, *readOnlyProcess) {
 	t.Helper()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -179,7 +205,11 @@ func startReadOnlyServer(t *testing.T, binary, work, content, note string, flags
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
+	return startReadOnlyServerAt(t, binary, work, content, note, addr, flags...)
+}
 
+func startReadOnlyServerAt(t *testing.T, binary, work, content, note, addr string, flags ...string) (string, *readOnlyProcess) {
+	t.Helper()
 	log, err := os.Create(filepath.Join(work, "console.log"))
 	if err != nil {
 		t.Fatal(err)
@@ -196,32 +226,20 @@ func startReadOnlyServer(t *testing.T, binary, work, content, note string, flags
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	var waitErr error
+	process := &readOnlyProcess{Process: cmd.Process, done: make(chan struct{})}
 	go func() {
-		waitErr = cmd.Wait()
-		close(done)
+		process.waitErr = cmd.Wait()
+		close(process.done)
 	}()
 	t.Cleanup(func() {
-		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			t.Errorf("send SIGTERM to lsget: %v", err)
-		}
 		select {
-		case <-done:
-			if waitErr != nil {
-				t.Errorf("lsget shutdown: %v", waitErr)
-			}
-		case <-time.After(8 * time.Second):
-			t.Error("lsget survived the SIGTERM deadline")
-			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-				t.Errorf("kill lsget: %v", err)
-			}
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Error("lsget was not reaped after SIGKILL")
+		case <-process.done:
+		default:
+			if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Errorf("send SIGTERM to lsget: %v", err)
 			}
 		}
+		process.awaitExit(t)
 		if t.Failed() {
 			output, err := os.ReadFile(log.Name())
 			if err != nil {
@@ -245,8 +263,8 @@ func startReadOnlyServer(t *testing.T, binary, work, content, note string, flags
 	defer ticker.Stop()
 	for {
 		select {
-		case <-done:
-			t.Fatalf("lsget exited before readiness: %v", waitErr)
+		case <-process.done:
+			t.Fatalf("lsget exited before readiness: %v", process.waitErr)
 		case <-ctx.Done():
 			t.Fatal("lsget did not serve the fixture before the readiness deadline")
 		case <-ticker.C:
@@ -258,7 +276,7 @@ func startReadOnlyServer(t *testing.T, binary, work, content, note string, flags
 			_ = response.Body.Close()
 			if err == nil && response.StatusCode == http.StatusOK && string(body) == note {
 				t.Logf("lsget PID %d served the fixture over HTTP", cmd.Process.Pid)
-				return baseURL, cmd.Process.Pid
+				return baseURL, process
 			}
 		}
 	}
