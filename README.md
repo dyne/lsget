@@ -121,6 +121,8 @@ Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 
 A file in the served directory can be shared by its path, such as `/eudi/report.pdf`, or with the `file` query parameter, such as `/?file=eudi/report.pdf`. Both links resolve from the served root and use the same content type and download headers. URL-encode special characters in the query value, for example `/?file=eudi/meeting%20notes.pdf`. The `file` parameter returns 404 for missing or ignored files and for directories.
 
+Direct file links and terminal downloads respect `.lsgetignore` rules on files and their parent directories. ZIP downloads omit ignored entries. Downloads can follow symlinks that resolve within the served root.
+
 ### Configuration flags
 ```
 ./lsget -h

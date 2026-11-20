@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -185,6 +187,22 @@ func TestHandleExec_DownloadVariants(t *testing.T) {
 	if !strings.Contains(r4.Output, "no matching files") {
 		t.Fatalf("no match: %#v", r4)
 	}
+
+	t.Run("filename with query characters", func(t *testing.T) {
+		const filename = "notes+review&comments.txt"
+		if err := os.WriteFile(filepath.Join(s.rootAbs, filename), []byte("notes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		result := execJSON(t, s, "download "+filename)
+		if result.Download == "" {
+			t.Fatalf("expected a download URL: %#v", result)
+		}
+		w := httptest.NewRecorder()
+		s.handleDownload(w, httptest.NewRequest(http.MethodGet, result.Download, nil))
+		if w.Code != http.StatusOK || w.Body.String() != "notes" {
+			t.Fatalf("download response: %d %q", w.Code, w.Body.String())
+		}
+	})
 }
 
 func TestHandleExec_TreeFindGrep(t *testing.T) {
@@ -273,6 +291,81 @@ func TestHandleDownload_Endpoints(t *testing.T) {
 	s.handleDownload(w4, r4)
 	if w4.Code != http.StatusBadRequest {
 		t.Fatalf("missing params: %d", w4.Code)
+	}
+}
+
+func TestDownloadRoutesApplyIgnoreRules(t *testing.T) {
+	s := newServer(t.TempDir(), 4*1024, "", "")
+	for name, content := range map[string]string{
+		".lsgetignore":            "docs/hidden.txt\ndocs/private\n",
+		"docs/allowed.txt":        "public document",
+		"docs/hidden.txt":         "ignored document",
+		"docs/private/hidden.txt": "ignored by parent directory",
+	} {
+		filename := filepath.Join(s.rootAbs, name)
+		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/api/static/", s.handleStaticFile)
+	mux.HandleFunc("/api/download", s.handleDownload)
+	request := func(target string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		return w
+	}
+
+	for _, prefix := range []string{"/", "/?file=", "/api/static/", "/api/download?path="} {
+		t.Run(prefix, func(t *testing.T) {
+			public := request(prefix + "docs/allowed.txt")
+			if public.Code != http.StatusOK || public.Body.String() != "public document" {
+				t.Fatalf("public file response: %d %q", public.Code, public.Body.String())
+			}
+			for _, name := range []string{"docs/hidden.txt", "docs/private/hidden.txt"} {
+				if got := request(prefix + name).Code; got != http.StatusNotFound {
+					t.Errorf("ignored file %s returned %d, want 404", name, got)
+				}
+			}
+		})
+	}
+
+	for _, tt := range []struct{ target, entry string }{
+		{"/api/download?dir=/docs", "docs/allowed.txt"},
+		{"/api/download?pattern=docs/*.txt", "allowed.txt"},
+	} {
+		t.Run(tt.target, func(t *testing.T) {
+			w := request(tt.target)
+			if w.Code != http.StatusOK {
+				t.Fatalf("archive response: %d %q", w.Code, w.Body.String())
+			}
+			archive, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(archive.File) != 1 || archive.File[0].Name != tt.entry {
+				t.Fatalf("archive did not contain exactly %q", tt.entry)
+			}
+			content, err := archive.Open(tt.entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = content.Close() }()
+			data, err := io.ReadAll(content)
+			if err != nil || string(data) != "public document" {
+				t.Fatalf("archive entry: %q, %v", data, err)
+			}
+		})
+	}
+	for _, target := range []string{"/api/download?pattern=docs/hidden.txt", "/api/download?dir=/docs/private"} {
+		if got := request(target).Code; got != http.StatusNotFound {
+			t.Errorf("%s returned %d, want 404", target, got)
+		}
 	}
 }
 
@@ -425,6 +518,14 @@ func TestHandleIndex_DirectFileQuery(t *testing.T) {
 		})
 	}
 
+	t.Run("canonical index redirect", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		s.handleIndex(w, httptest.NewRequest(http.MethodGet, "/index.html?nojs=1", nil))
+		if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != "./?nojs=1" {
+			t.Fatalf("redirect = %d %q, want 301 ./?nojs=1", w.Code, w.Header().Get("Location"))
+		}
+	})
+
 	t.Run("symlink outside the served root", func(t *testing.T) {
 		outsideFile := filepath.Join(t.TempDir(), "outside.pdf")
 		if err := os.WriteFile(outsideFile, []byte(pdf), 0o644); err != nil {
@@ -433,10 +534,19 @@ func TestHandleIndex_DirectFileQuery(t *testing.T) {
 		if err := os.Symlink(outsideFile, filepath.Join(s.rootAbs, "link.pdf")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		w := httptest.NewRecorder()
-		s.handleIndex(w, httptest.NewRequest(http.MethodGet, "/?file=link.pdf", nil))
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", s.handleIndex)
+		mux.HandleFunc("/api/static/", s.handleStaticFile)
+		mux.HandleFunc("/api/download", s.handleDownload)
+		for _, target := range []string{
+			"/link.pdf", "/?file=link.pdf", "/api/static/link.pdf",
+			"/api/download?path=/link.pdf", "/api/download?pattern=link*.pdf",
+		} {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+			if w.Code != http.StatusNotFound {
+				t.Errorf("%s returned %d, want 404", target, w.Code)
+			}
 		}
 	})
 }

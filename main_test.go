@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+func openTestDownloadRoot(t *testing.T, name string) *os.Root {
+	t.Helper()
+	root, err := os.OpenRoot(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return root
+}
+
 func TestCollectFilesForDownload(t *testing.T) {
 	// Create test directory structure
 	testDir := "test_download_dir"
@@ -36,10 +46,10 @@ func TestCollectFilesForDownload(t *testing.T) {
 	}
 
 	rootAbs, _ := filepath.Abs(testDir)
-	s := newServer(rootAbs, 256*1024, "","")
+	root := openTestDownloadRoot(t, rootAbs)
 
 	// Test wildcard pattern
-	files, err := s.collectFilesForDownload("/", "*.png")
+	files, err := collectFilesForDownload(root, "/", "*.png")
 	if err != nil {
 		t.Errorf("Failed to collect files: %v", err)
 	}
@@ -48,7 +58,7 @@ func TestCollectFilesForDownload(t *testing.T) {
 	}
 
 	// Test directory download
-	files, err = s.collectFilesForDownload("/", ".")
+	files, err = collectFilesForDownload(root, "/", ".")
 	if err != nil {
 		t.Errorf("Failed to collect directory files: %v", err)
 	}
@@ -84,10 +94,10 @@ func TestCollectFilesFromDirectory(t *testing.T) {
 	}
 
 	rootAbs, _ := filepath.Abs(testDir)
-	s := newServer(rootAbs, 256*1024, "","")
+	root := openTestDownloadRoot(t, rootAbs)
 
 	// Test collecting files from directory
-	files, err := s.collectFilesFromDirectory("/", rootAbs)
+	files, err := collectFilesFromDirectory(root, ".")
 	if err != nil {
 		t.Errorf("Failed to collect files from directory: %v", err)
 	}
