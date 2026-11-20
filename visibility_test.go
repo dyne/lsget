@@ -382,28 +382,28 @@ func TestWalkVisibilityErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := openTestDownloadRoot(t, dir)
-	unexpected := func(entry visibleEntry) bool {
+	unexpected := func(entry visibleEntry) (bool, error) {
 		t.Errorf("unexpected visit to %s", entry.name)
-		return false
+		return false, nil
 	}
-	if err := walkVisibleDir(root, "does-not-exist", unexpected); !errors.Is(err, fs.ErrNotExist) {
+	if err := walkVisibleDir(t.Context(), newWorkBudget(), root, "does-not-exist", unexpected); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing starting directory error = %v", err)
 	}
-	if err := walkVisibleDir(root, "b-sibling/item.txt", unexpected); !errors.Is(err, fs.ErrInvalid) {
+	if err := walkVisibleDir(t.Context(), newWorkBudget(), root, "b-sibling/item.txt", unexpected); !errors.Is(err, fs.ErrInvalid) {
 		t.Errorf("non-directory starting path error = %v", err)
 	}
-	if err := walkVisibleDir(root, "z-empty", unexpected); err != nil {
+	if err := walkVisibleDir(t.Context(), newWorkBudget(), root, "z-empty", unexpected); err != nil {
 		t.Errorf("empty starting directory error = %v", err)
 	}
 	var visited []string
-	err := walkVisibleDir(root, ".", func(entry visibleEntry) bool {
+	err := walkVisibleDir(t.Context(), newWorkBudget(), root, ".", func(entry visibleEntry) (bool, error) {
 		visited = append(visited, entry.name)
 		if entry.name == "a-child" {
 			if err := os.Remove(filepath.Join(dir, "a-child")); err != nil {
 				t.Fatal(err)
 			}
 		}
-		return true
+		return true, nil
 	})
 	if err != nil || !slices.Contains(visited, "b-sibling/item.txt") {
 		t.Errorf("child disappearance interrupted the walk: visited %v, error %v", visited, err)

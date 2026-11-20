@@ -42,6 +42,9 @@ func TestSessionConcurrency(t *testing.T) {
 			method = http.MethodPost
 		}
 		r := httptest.NewRequest(method, target, strings.NewReader(body))
+		if method == http.MethodPost {
+			r.Header.Set("Content-Type", "application/json")
+		}
 		if cookie != nil {
 			r.AddCookie(cookie)
 		}

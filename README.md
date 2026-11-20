@@ -129,6 +129,32 @@ Each terminal session stores its working directory in memory and uses an `sid` c
 
 Direct downloads and archive requests that specify their directory bypass terminal sessions. lsget sets `Secure` on session cookies for TLS requests. When an HTTPS-only reverse proxy terminates TLS, set `LSGET_SECURE_SESSION_COOKIE=true` or pass `-secure-session-cookie` and keep the lsget listener reachable only by the proxy. Forwarding headers do not control the cookie's `Secure` attribute.
 
+### HTTP request limits
+
+| Routes | Allowed methods |
+| --- | --- |
+| `/api/config` | `GET` |
+| `/api/exec`, `/api/complete` | `POST` |
+| Downloads, static assets, `/sitemap.xml`, published pages and file links | `GET`, `HEAD` |
+
+A method outside the route's list returns HTTP 405 with an `Allow` header. Each JSON request body must contain one object and fit within 8 KiB, including whitespace. An oversized body returns HTTP 413. Invalid JSON, extra JSON values and non-object bodies return HTTP 400.
+
+JSON requests and `/api/config?path=…` accept same-origin browser requests. If the browser sends `Sec-Fetch-Site`, it must be `same-origin`. A supplied `Origin` must match the request's host, port and TLS scheme or the origin configured in `LSGET_BASEURL`. For an HTTPS-only proxy that preserves the public `Host` header, `LSGET_SECURE_SESSION_COOKIE=true` selects the HTTPS scheme. If the proxy rewrites `Host`, set `LSGET_BASEURL` to the public URL. Forwarding headers play no part in this check.
+
+CLI requests can omit `Origin` and `Sec-Fetch-Site`. When reusing an `sid` cookie without either header, send `Content-Type: application/json` with JSON requests and `X-Lsget-Request: 1` when setting the working directory through `/api/config?path=…`.
+
+The server caps request headers at 64 KiB, gives clients 5 seconds to send headers and 10 seconds total to send the request, and closes idle keep-alive connections after 60 seconds. Downloads have no fixed response deadline, and direct file downloads support byte ranges and `HEAD`.
+
+### Filesystem work limits
+
+The server admits up to eight concurrent filesystem jobs across terminal listing, preview, search, checksum, completion, archive, plain directory listing and generated sitemap work. When all slots are busy, a new job receives HTTP 503 with `Retry-After: 1`. Direct file downloads and cached or manually served sitemaps do not consume a slot.
+
+Each job can examine up to 4,096 directory entries, including hidden entries and nonmatches. Recursive commands can descend up to 128 directory levels. Resolved entry paths share a 1 MiB budget per job. The server reads a directory in bounded batches and sorts the entries it examined. A partial listing can omit entries anywhere in the full alphabetical order. Terminal output is limited to 256 KiB of text before JSON encoding and ends with `[results truncated by server limits]` when a listing or search stops early. The JSON response sets `truncated: true` in that case. Completion returns up to 200 items with the same flag for partial results. A plain directory listing displays a truncation notice when it reaches a limit.
+
+`grep` reads up to 10 MiB per file and 32 MiB across a command. It skips lines longer than 64 KiB, marks the result as truncated, and resumes at the next line. `cat` uses the smaller of the configured cat limit and the terminal output limit. README previews retain their 256 KiB preview limit and use the directory entry budget when choosing the preview file.
+
+An archive that exceeds the entry, depth or path budget is rejected before streaming with HTTP 422. A generated sitemap that exceeds those limits or 8 MiB of XML leaves its previous snapshot available. If there is no snapshot, the server returns HTTP 422. Streamed file and ZIP content have no byte cap. Walks and scans check for cancellation between entries and reads. Checksum and ZIP copies check between chunks.
+
 ### Application shell and published websites
 
 The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).

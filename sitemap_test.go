@@ -53,7 +53,7 @@ func TestSitemapServedFromMemory(t *testing.T) {
 		t.Fatal("repeated request did not use the cached sitemap")
 	}
 
-	if _, err := s.getSitemap(true); err != nil {
+	if _, err := s.getSitemap(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}
 	refreshed := readSitemap(t, s).Body.String()
@@ -67,7 +67,7 @@ func TestSitemapServedFromMemory(t *testing.T) {
 	if err := os.Rename(root, root+".offline"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.getSitemap(true); err == nil {
+	if _, err := s.getSitemap(t.Context(), true); err == nil {
 		t.Fatal("refresh unexpectedly succeeded with the served directory offline")
 	}
 	if got := readSitemap(t, s).Body.String(); got != refreshed {

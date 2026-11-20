@@ -831,7 +831,9 @@
             terminalView.appendHelp(el.querySelector('#transcript'));
 
             function loadDirectory(path) {
-              return fetch('/api/config?path=' + encodeURIComponent(path))
+              return fetch('/api/config?path=' + encodeURIComponent(path), {
+                headers: { 'X-Lsget-Request': '1' }
+              })
               .then(r => r.json())
               .then(res => {
                 $ps1 = 'guest@browser:' + res.cwd + '$ ';
@@ -954,8 +956,21 @@
                method: 'POST', headers: { 'Content-Type': 'application/json' },
                body: JSON.stringify(body)
              })
-             .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-             .then(({ items }) => {
+             .then(r => {
+               if (r.status === 503) {
+                 completions.textContent = 'Completion busy. Try Tab again.';
+                 return null;
+               }
+               return r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`));
+             })
+             .then(res => {
+               if (!res) return;
+               const { items, truncated } = res;
+               if (truncated) {
+                 const shown = items.map(it => it.name + (it.dir ? '/' : '')).join('  ');
+                 completions.textContent = shown ? shown + '  [results truncated]' : '[results truncated]';
+                 return;
+               }
                if (!Array.isArray(items) || items.length === 0) {
                  completions.replaceChildren();
                  return;
