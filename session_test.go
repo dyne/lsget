@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,87 @@ import (
 	"testing"
 	"time"
 )
+
+func TestBrowserRequestDirectory(t *testing.T) {
+	s := newServer(t.TempDir(), 4096, "", "")
+	for dir, file := range map[string]string{"/first": "first.txt", "/first/nested": "nested.txt", "/second": "second.txt"} {
+		folder := filepath.Join(s.rootAbs, dir)
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range map[string]string{"README.txt": dir, file: file} {
+			if err := os.WriteFile(filepath.Join(folder, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	handler := s.httpServer("").Handler
+	request := func(route, cwd, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		method := http.MethodGet
+		if body != "" {
+			method = http.MethodPost
+		}
+		if cwd != "" {
+			route += "?cwd=" + url.QueryEscape(cwd)
+		}
+		r := httptest.NewRequest(method, "http://files.test"+route, strings.NewReader(body))
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if cwd != "" && len(w.Result().Cookies()) > 0 {
+			t.Fatalf("%s with explicit CWD issued a session cookie", route)
+		}
+		return w
+	}
+	const configRoute, execRoute, completeRoute = "/api/config", "/api/exec", "/api/complete"
+	legacy := request(configRoute+"?path=/first", "", "", nil)
+	legacyConfig := decodeSessionResponse[configResp](t, legacy)
+	cookies := legacy.Result().Cookies()
+	if legacyConfig.CWD != "/first" || len(cookies) != 1 {
+		t.Fatalf("expected a legacy session at /first, got %+v with %d cookies", legacyConfig, len(cookies))
+	}
+
+	latest := request(configRoute, "/second", "", nil)
+	cfg := decodeSessionResponse[configResp](t, latest)
+	if cfg.CWD != "/second" || cfg.Readme == nil || *cfg.Readme != "/second" {
+		t.Fatalf("mismatched directory and README: %+v", cfg)
+	}
+	// An older request may reach the server after the newer navigation.
+	stale := request(execRoute, "/first", `{"input":"cd nested"}`, cookies[0])
+	dir := decodeSessionResponse[execResp](t, stale)
+	if dir.CWD != "/first/nested" || dir.Readme == nil || *dir.Readme != "/first/nested" {
+		t.Fatalf("relative cd didn't use its explicit directory: %+v", dir)
+	}
+
+	for _, check := range []struct{ directory, expected string }{{"/second", "/second"}, {"", "/first"}} {
+		pwd := request(execRoute, check.directory, `{"input":"pwd"}`, cookies[0])
+		actual := decodeSessionResponse[execResp](t, pwd)
+		if actual.CWD != check.expected || actual.Output != check.expected {
+			t.Errorf("pwd with CWD %q: %+v, want %s", check.directory, actual, check.expected)
+		}
+	}
+	items := decodeSessionResponse[completeResp](t, request(completeRoute, "/second", `{"path":"sec"}`, cookies[0])).Items
+	if len(items) != 1 || items[0].Name != "second.txt" {
+		t.Errorf("completion did not use /second: %+v", items)
+	}
+	share := decodeSessionResponse[execResp](t, request(execRoute, "/second", `{"input":"url second.txt"}`, nil))
+	if share.Clipboard != "http://files.test/second/second.txt" || share.Output != "Shareable URL: "+share.Clipboard {
+		t.Errorf("share must offer the URL regardless of clipboard availability: %+v", share)
+	}
+	download := decodeSessionResponse[execResp](t, request(execRoute, "/second", `{"input":"get second.txt"}`, nil))
+	if download.Download != "/api/download?path=%2Fsecond%2Fsecond.txt" {
+		t.Errorf("download did not use /second: %+v", download)
+	}
+	if absent := request(configRoute, "/absent", "", nil); absent.Code != http.StatusNotFound {
+		t.Errorf("missing directory config returned %d", absent.Code)
+	}
+}
 
 func TestSessionConcurrency(t *testing.T) {
 	s := newServer(t.TempDir(), 4*1024, "", "")

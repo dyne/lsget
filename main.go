@@ -73,13 +73,13 @@ const helpTpl = `Welcome to <span class="ps1">lsget</span> <span class="help-ver
 • <strong>cat</strong> <span class="help-note">FILE</span> - <span class="help-description">view a text file</span>
 • <strong>sum</strong>|<strong>checksum</strong> <span class="help-note">FILE</span> - <span class="help-description">print MD5 and SHA256 checksums</span>
 • <strong>get</strong>|<strong>wget</strong>|<strong>download</strong> <span class="help-note">FILE</span> - <span class="help-description">download a file</span>
-• <strong>url</strong>|<strong>share</strong> <span class="help-note">FILE</span> - <span class="help-description">get shareable URL (copies to clipboard)</span>
+• <strong>url</strong>|<strong>share</strong> <span class="help-note">FILE</span> - <span class="help-description">get a shareable URL with a Copy URL control</span>
 • <strong>tree</strong> <span class="help-note">[-L&lt;DEPTH&gt;] [-a]</span> - <span class="help-description">directory structure</span>
 • <strong>find</strong> <span class="help-note">[PATH] [-name PATTERN] [-type f|d]</span> - <span class="help-description">search for files and directories</span>
 • <strong>grep</strong> <span class="help-note">[-r] [-i] [-n] PATTERN [FILE...]</span> - <span class="help-description">search for text patterns in files</span>
 
 <br/><br/>
-<span class="help-heading">Hint: to autocomplete filenames and dir use</span> <kbd class="ps1">Tab</kbd>
+<span class="help-heading"><strong>Complete</strong> suggests file and directory names.</span>
 `
 
 func renderHelp() string {
@@ -347,7 +347,15 @@ func (s *session) changeDirectory(root *os.Root, target string) (string, error) 
 	// Resolve and validate relative changes against the last committed CWD.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	newV := joinVirtual(s.cwd, target)
+	newV, err := resolveDirectory(root, s.cwd, target)
+	if err == nil {
+		s.cwd = newV
+	}
+	return newV, err
+}
+
+func resolveDirectory(root *os.Root, cwd, target string) (string, error) {
+	newV := joinVirtual(cwd, target)
 	info, err := visibleInfo(root, rootedName(newV))
 	if err != nil {
 		return "", errors.New("no such file or directory")
@@ -355,7 +363,6 @@ func (s *session) changeDirectory(root *os.Root, target string) (string, error) 
 	if !info.IsDir() {
 		return "", errors.New("not a directory")
 	}
-	s.cwd = newV
 	return newV, nil
 }
 
@@ -1509,7 +1516,18 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "sitemap.xml", snapshot.generatedAt, strings.NewReader(snapshot.content))
 }
 
+// A browser tab owns its CWD. Each request carries its directory snapshot so
+// a delayed command cannot modify the directory used by a newer request.
+func requestCWD(r *http.Request) string {
+	cwd := r.URL.Query().Get("cwd")
+	if cwd == "" {
+		return ""
+	}
+	return cleanVirtual(cwd)
+}
+
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	requestedCWD := requestCWD(r)
 	initialPath := r.URL.Query().Get("path")
 	if initialPath != "" && !s.acceptSessionOrigin(r) {
 		http.Error(w, "forbidden request origin", http.StatusForbidden)
@@ -1520,22 +1538,34 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	sess := s.acquireSession(w, r)
-	if sess == nil {
-		return
+	var sess *session
+	cwd := requestedCWD
+	if cwd == "" {
+		sess = s.acquireSession(w, r)
+		if sess == nil {
+			return
+		}
+		defer s.releaseSession(sess)
+		cwd = sess.workingDirectory()
 	}
-	defer s.releaseSession(sess)
-	cwd := sess.workingDirectory()
 	var readme, docType string
 	var readmeTruncated bool
 	if root, err := os.OpenRoot(s.rootAbs); err == nil {
 		defer func() { _ = root.Close() }()
-		if initialPath != "" {
+		if requestedCWD != "" {
+			if _, err := resolveDirectory(root, "/", cwd); err != nil {
+				http.NotFound(w, r)
+				return
+			}
+		} else if initialPath != "" {
 			if newV, err := sess.changeDirectory(root, cleanVirtual(initialPath)); err == nil {
 				cwd = newV
 			}
 		}
 		readme, docType, readmeTruncated = readDocFile(r.Context(), root, rootedName(cwd))
+	} else if requestedCWD != "" {
+		http.Error(w, "cannot open served directory", http.StatusServiceUnavailable)
+		return
 	}
 	if r.Context().Err() != nil {
 		return
@@ -1573,6 +1603,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	budget := newWorkBudget()
 	var sess *session
 	var cwd string
+	requestedCWD := requestCWD(r)
 	defer func() {
 		if sess != nil {
 			s.releaseSession(sess)
@@ -1582,6 +1613,9 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	cwdFor := func(target string) (string, bool) {
 		if path.IsAbs(target) {
 			return "/", true
+		}
+		if requestedCWD != "" {
+			return requestedCWD, true
 		}
 		if sess == nil {
 			sess = s.acquireSession(w, r)
@@ -1708,11 +1742,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				target = "/"
 			}
 		}
-		sess = s.acquireSession(w, r)
-		if sess == nil {
-			return
+		var newV string
+		var err error
+		if requestedCWD != "" {
+			newV, err = resolveDirectory(root, requestedCWD, target)
+		} else {
+			sess = s.acquireSession(w, r)
+			if sess == nil {
+				return
+			}
+			newV, err = sess.changeDirectory(root, target)
 		}
-		newV, err := sess.changeDirectory(root, target)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cd: " + err.Error()})
 			return
@@ -2050,9 +2090,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		fileURL := base + urlEscapeVirtual(vp)
 		recordCommand(w, cmd, vp)
 
-		// Return the URL with clipboard instruction
+		output := "Shareable URL: " + fileURL
+		if requestedCWD == "" {
+			output += "\n" + colorGreen + "URL copied to clipboard!" + colorReset
+		}
 		_ = json.NewEncoder(w).Encode(execResp{
-			Output:    fmt.Sprintf("Shareable URL: %s\n%sURL copied to clipboard!%s", fileURL, colorGreen, colorReset),
+			Output:    output,
 			Clipboard: fileURL,
 		})
 		return
@@ -2518,6 +2561,10 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	arg := req.Path
+	requestedCWD := requestCWD(r)
+	if requestedCWD != "" && req.TextOnly && req.MaxSize == 0 {
+		req.MaxSize = s.catMax
+	}
 	// Split into dir part + base (prefix)
 	slash := strings.LastIndex(arg, "/")
 	dirPart := ""
@@ -2531,6 +2578,8 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	var baseV string
 	if strings.HasPrefix(arg, "/") {
 		baseV = cleanVirtual(dirPart)
+	} else if requestedCWD != "" {
+		baseV = joinVirtual(requestedCWD, dirPart)
 	} else {
 		sess := s.acquireSession(w, r)
 		if sess == nil {
