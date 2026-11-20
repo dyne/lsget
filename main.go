@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
-	"flag"
 	"fmt"
 	"html"
 	"html/template"
@@ -21,9 +20,9 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
-	"os/signal"
 	"path"
 	"path/filepath"
 	"sort"
@@ -31,21 +30,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 	"unicode/utf8"
 )
 
 var version = "dev"
-
-// Indirections for testability
-var (
-	exitFunc       = os.Exit
-	listenAndServe = func(srv *http.Server) error { return srv.ListenAndServe() }
-	pidFile        = ""
-	logFile        = ""
-	logMutex       sync.Mutex
-)
 
 // ===== ANSI Color Codes =====
 
@@ -371,10 +360,13 @@ func (s *session) changeDirectory(root *os.Root, target string) (string, error) 
 }
 
 type server struct {
-	rootAbs string // absolute filesystem root we expose
-	catMax  int64  // max bytes allowed for `cat`
-	logfile string // path to log file for statistics
-	baseURL string // optional: public base URL (e.g., https://files.example.com) - auto-detects from request if empty
+	rootAbs        string // absolute filesystem root we expose
+	catMax         int64  // max bytes allowed for `cat`
+	logfile        string // path to log file for statistics
+	baseURL        string // optional: public base URL (e.g., https://files.example.com) - auto-detects from request if empty
+	trustedProxies []netip.Prefix
+	logMu          sync.Mutex
+	lastLogWarning time.Time
 
 	sessionsMu          sync.Mutex
 	sessions            map[string]*session
@@ -700,19 +692,23 @@ func writeSitemapEntry(enc *xml.Encoder, base, name string, info fs.FileInfo) er
 	return enc.EncodeToken(element.End())
 }
 
-// startSitemapGenerator starts periodic sitemap regeneration
-func (s *server) startSitemapGenerator(ctx context.Context, interval time.Duration) {
+// startSitemapGenerator reports when the initial refresh and the worker finish.
+func (s *server) startSitemapGenerator(ctx context.Context, interval time.Duration, stdout, stderr io.Writer) (ready, done <-chan struct{}) {
+	initial := make(chan struct{})
 	if interval <= 0 || s.baseURL == "" {
-		return
+		close(initial)
+		return initial, initial
 	}
-
-	if _, err := s.getSitemap(ctx, true); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to generate initial sitemap: %v\n", err)
-	} else {
-		fmt.Println("Generated sitemap.xml in memory")
-	}
-
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
+		if _, err := s.getSitemap(ctx, true); err == nil {
+			_, _ = fmt.Fprintln(stdout, "Generated sitemap.xml in memory")
+		} else if ctx.Err() == nil {
+			_, _ = fmt.Fprintf(stderr, "failed to generate initial sitemap: %v\n", err)
+		}
+		close(initial)
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -721,60 +717,13 @@ func (s *server) startSitemapGenerator(ctx context.Context, interval time.Durati
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := s.getSitemap(ctx, true); err != nil {
-					fmt.Fprintf(os.Stderr, "failed to regenerate sitemap: %v\n", err)
+				if _, err := s.getSitemap(ctx, true); err != nil && ctx.Err() == nil {
+					_, _ = fmt.Fprintf(stderr, "failed to regenerate sitemap: %v\n", err)
 				}
 			}
 		}
 	}()
-}
-
-// getClientIP extracts the real client IP, checking X-Forwarded-For first
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (for reverse proxies)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For can contain multiple IPs: "client, proxy1, proxy2"
-		// The first one is the original client
-		if comma := strings.Index(xff, ","); comma > 0 {
-			return strings.TrimSpace(xff[:comma])
-		}
-		return strings.TrimSpace(xff)
-	}
-
-	// Fallback to RemoteAddr
-	ip := r.RemoteAddr
-	if colon := strings.LastIndex(ip, ":"); colon != -1 {
-		return ip[:colon]
-	}
-	return ip
-}
-
-// logCommand writes a command execution to the log file
-func (s *server) logCommand(cmd, filePath, ip string) {
-	if s.logfile == "" {
-		return
-	}
-
-	logMutex.Lock()
-	defer logMutex.Unlock()
-
-	// Ensure log directory exists
-	logDir := filepath.Dir(s.logfile)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return
-	}
-
-	f, err := os.OpenFile(s.logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer func() { _ = f.Close() }()
-
-	timestamp := time.Now().Format("[02/Jan/2006:15:04:05 -0700]")
-	// Format: ip - - timestamp "POST /api/exec?cmd=COMMAND&file=PATH HTTP/1.1" 200 0 "-" "-"
-	logLine := fmt.Sprintf("%s - - %s \"POST /api/exec?cmd=%s&file=%s HTTP/1.1\" 200 0 \"-\" \"-\"\n",
-		ip, timestamp, cmd, url.QueryEscape(filePath))
-	_, _ = f.WriteString(logLine)
+	return initial, finished
 }
 
 func newSID() string {
@@ -1882,9 +1831,6 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Get IP address for logging
-		ip := getClientIP(r)
-
 		// Check if pattern contains wildcards or is a directory
 		if strings.ContainsAny(pattern, "*?[") || pattern == "." {
 			// Handle pattern-based download (multiple files)
@@ -1907,13 +1853,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(files) == 1 {
 				// Single file, download directly
-				s.logCommand("get", files[0].virtualPath, ip)
+				recordCommand(w, "get", files[0].virtualPath)
 				downloadURL := "/api/download?path=" + url.QueryEscape(files[0].virtualPath)
 				_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: downloadURL})
 				return
 			}
 			// Multiple files, create zip
-			s.logCommand("get", "(pattern match)", ip)
+			recordCommand(w, "get", "(pattern match)")
 			downloadURL := "/api/download?pattern=" + url.QueryEscape(pattern) + "&cwd=" + url.QueryEscape(cwd)
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: downloadURL})
 			return
@@ -1948,7 +1894,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			dirName := downloadDirectoryName(root, name)
-			s.logCommand("get", vp+" (dir)", ip)
+			recordCommand(w, "get", vp+" (dir)")
 			downloadURL := "/api/download?dir=" + url.QueryEscape(vp)
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading directory '%s' with %d files as %s.zip", dirName, len(files), dirName), Download: downloadURL})
 			return
@@ -1959,7 +1905,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: no such file"})
 			return
 		}
-		s.logCommand("get", vp, ip)
+		recordCommand(w, "get", vp)
 		downloadURL := "/api/download?path=" + url.QueryEscape(vp)
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", Download: downloadURL})
 		return
@@ -2096,29 +2042,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Build the full URL for the file
-		var fileURL string
-		escapedPath := urlEscapeVirtual(vp)
-		if s.baseURL != "" {
-			// Use configured base URL (clean, no /api/static)
-			// Required when behind reverse proxy with different public URL
-			fileURL = s.baseURL + escapedPath
-		} else {
-			// Auto-detect from request (works for most cases)
-			// Uses Host header and X-Forwarded-Proto for protocol detection
-			host := r.Host
-			if host == "" {
-				host = "localhost:8080"
-			}
-			protocol := "http"
-			if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-				protocol = "https"
-			}
-			fileURL = fmt.Sprintf("%s://%s%s", protocol, host, escapedPath)
+		base, err := s.publicBaseURL(r)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "url: " + err.Error()})
+			return
 		}
-
-		// Log the share command
-		s.logCommand(cmd, vp, getClientIP(r))
+		fileURL := base + urlEscapeVirtual(vp)
+		recordCommand(w, cmd, vp)
 
 		// Return the URL with clipboard instruction
 		_ = json.NewEncoder(w).Encode(execResp{
@@ -2267,7 +2197,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		sha256Sum := hex.EncodeToString(sha256Hash.Sum(nil))
 
 		// Log the checksum command
-		s.logCommand(cmd, vp, getClientIP(r))
+		recordCommand(w, cmd, vp)
 
 		output := fmt.Sprintf("MD5:    %s\nSHA256: %s", md5Sum, sha256Sum)
 		_ = json.NewEncoder(w).Encode(execResp{Output: output})
@@ -2683,235 +2613,4 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	})
 
 	_ = json.NewEncoder(w).Encode(completeResp{Items: items, Truncated: truncated})
-}
-
-// ===== Main =====
-
-func main() {
-	// Environment variable helper functions
-	getEnvOrDefault := func(key, defaultValue string) string {
-		if v := os.Getenv(key); v != "" {
-			return v
-		}
-		return defaultValue
-	}
-	getEnvOrDefaultInt64 := func(key string, defaultValue int64) int64 {
-		if v := os.Getenv(key); v != "" {
-			if i, err := fmt.Sscanf(v, "%d", &defaultValue); i == 1 && err == nil {
-				return defaultValue
-			}
-		}
-		return defaultValue
-	}
-	getEnvOrDefaultInt := func(key string, defaultValue int) int {
-		if v := os.Getenv(key); v != "" {
-			var result int
-			if i, err := fmt.Sscanf(v, "%d", &result); i == 1 && err == nil {
-				return result
-			}
-		}
-		return defaultValue
-	}
-
-	// Define flags with environment variable support (LSGET_* prefix)
-	secureCookieDefault, _ := strconv.ParseBool(os.Getenv("LSGET_SECURE_SESSION_COOKIE"))
-	var (
-		printVersion    = flag.Bool("version", false, "Print the version of this software and exits")
-		addr            = flag.String("addr", getEnvOrDefault("LSGET_ADDR", "localhost:8080"), "address to listen on (env: LSGET_ADDR)")
-		dir             = flag.String("dir", getEnvOrDefault("LSGET_DIR", "."), "directory to expose as root (env: LSGET_DIR)")
-		catMax          = flag.Int64("catmax", getEnvOrDefaultInt64("LSGET_CATMAX", 4*1024), "max bytes printable via `cat` and used by completion (env: LSGET_CATMAX)")
-		devTemplate     = flag.String("dev-template", getEnvOrDefault("LSGET_DEV_TEMPLATE", ""), "use a local application template for development (env: LSGET_DEV_TEMPLATE)")
-		shellCSP        = flag.String("shell-csp", getEnvOrDefault("LSGET_SHELL_CSP", "enforce"), "application CSP mode: enforce or report-only (env: LSGET_SHELL_CSP)")
-		secureCookie    = flag.Bool("secure-session-cookie", secureCookieDefault, "require HTTPS for session cookies behind an HTTPS-only proxy (env: LSGET_SECURE_SESSION_COOKIE)")
-		pidFileFlag     = flag.String("pid", getEnvOrDefault("LSGET_PID", ""), "path to PID file (env: LSGET_PID)")
-		logfileFlag     = flag.String("logfile", getEnvOrDefault("LSGET_LOGFILE", ""), "path to log file for statistics (env: LSGET_LOGFILE)")
-		baseURL         = flag.String("baseurl", getEnvOrDefault("LSGET_BASEURL", ""), "base URL for the site - full URL without trailing slash (e.g., https://files.example.com) (env: LSGET_BASEURL)")
-		sitemapInterval = flag.Int("sitemap", getEnvOrDefaultInt("LSGET_SITEMAP", 0), "refresh the in-memory sitemap every N minutes (0 = on demand only) (env: LSGET_SITEMAP)")
-	)
-	flag.Parse()
-
-	if *printVersion {
-		fmt.Printf("lsget %s\n", version)
-		fmt.Println("A lightweight CDN UI: Self-hosted file server with a full‑screen, neon‑themed TUI in your browser.")
-		fmt.Println()
-		fmt.Println("Copyright © 2025 Dyne.org foundation, Amsterdam")
-		fmt.Println("Licensed under GNU Affero General Public License v3.0")
-		fmt.Println()
-		fmt.Println("Repository: https://github.com/dyne/lsget")
-		fmt.Println("Website:    https://dyne.org")
-		exitFunc(0)
-	}
-
-	rootAbs, err := filepath.Abs(*dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to resolve dir: %v\n", err)
-		exitFunc(1)
-	}
-	info, err := os.Stat(rootAbs)
-	if err != nil || !info.IsDir() {
-		fmt.Fprintf(os.Stderr, "dir is not a directory: %s\n", rootAbs)
-		exitFunc(1)
-	}
-
-	if *shellCSP != "enforce" && *shellCSP != "report-only" {
-		fmt.Fprintln(os.Stderr, "shell-csp must be enforce or report-only")
-		exitFunc(1)
-		return
-	}
-
-	// Set global log file path
-	if *logfileFlag != "" {
-		logFile = *logfileFlag
-	}
-
-	s := newServer(rootAbs, *catMax, *logfileFlag, *baseURL)
-	s.devTemplate = *devTemplate
-	s.shellCSPReportOnly = *shellCSP == "report-only"
-	s.secureSessionCookie = *secureCookie
-
-	// Create PID file if specified
-	if *pidFileFlag != "" {
-		pid := os.Getpid()
-		pidStr := fmt.Sprintf("%d", pid)
-		if err := os.WriteFile(*pidFileFlag, []byte(pidStr), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to create PID file: %v\n", err)
-			exitFunc(1)
-		}
-		// Store PID file path for cleanup
-		pidFile = *pidFileFlag
-	}
-
-	background, cancelBackground := context.WithCancel(context.Background())
-	defer cancelBackground()
-	go s.runSessionCleanup(background)
-	s.startSitemapGenerator(background, time.Duration(*sitemapInterval)*time.Minute)
-
-	fmt.Printf("Serving %s on http://%s  (cat max = %d bytes)\n", rootAbs, *addr, *catMax)
-	if s.logfile != "" {
-		fmt.Printf("Logging to: %s\n", s.logfile)
-	} else {
-		fmt.Println("Logging disabled (use -logfile or LSGET_LOGFILE to enable)")
-	}
-	srv := s.httpServer(*addr)
-
-	// Handle graceful shutdown
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		for sig := range c {
-			fmt.Printf("\nReceived signal %s, shutting down server...\n", sig)
-			// Remove PID file if it exists
-			if pidFile != "" {
-				_ = os.Remove(pidFile)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := srv.Shutdown(ctx); err != nil {
-				fmt.Fprintf(os.Stderr, "server shutdown error: %v\n", err)
-			}
-			cancel()
-			exitFunc(0)
-		}
-	}()
-
-	if err := listenAndServe(srv); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-		// Remove PID file on error
-		if pidFile != "" {
-			_ = os.Remove(pidFile)
-		}
-		exitFunc(1)
-	}
-}
-
-// responseLogger wraps a ResponseWriter to capture status code and response size
-type responseLogger struct {
-	http.ResponseWriter
-	statusCode int
-	size       int
-	archiveErr error
-}
-
-func (rl *responseLogger) WriteHeader(code int) {
-	rl.statusCode = code
-	rl.ResponseWriter.WriteHeader(code)
-}
-
-func (rl *responseLogger) Write(b []byte) (int, error) {
-	if rl.statusCode == 0 {
-		rl.statusCode = http.StatusOK
-	}
-	size, err := rl.ResponseWriter.Write(b)
-	rl.size += size
-	return size, err
-}
-
-func logRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Wrap the ResponseWriter to capture status code and size
-		rl := &responseLogger{ResponseWriter: w}
-
-		next.ServeHTTP(rl, r)
-
-		// Get remote IP address
-		ip := getClientIP(r)
-
-		// Get user identifier (using "-" as we don't have user auth)
-		user := "-"
-
-		// Get timestamp in CLF format
-		timestamp := time.Now().Format("[02/Jan/2006:15:04:05 -0700]")
-
-		// Get request line
-		requestLine := fmt.Sprintf("%s %s %s", r.Method, r.URL.RequestURI(), r.Proto)
-
-		// Get status code and response size
-		statusCode := rl.statusCode
-		responseSize := rl.size
-
-		// Get referer and user agent
-		referer := r.Referer()
-		if referer == "" {
-			referer = "-"
-		}
-		userAgent := r.UserAgent()
-		if userAgent == "" {
-			userAgent = "-"
-		}
-
-		// Combined Log Format:
-		// "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i"
-		sizeStr := "-"
-		if responseSize > 0 {
-			sizeStr = fmt.Sprintf("%d", responseSize)
-		}
-
-		logLine := fmt.Sprintf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"",
-			ip, "-", user, timestamp, requestLine, statusCode, sizeStr, referer, userAgent)
-		if rl.archiveErr != nil {
-			logLine += fmt.Sprintf(" archive=incomplete error=%q", rl.archiveErr.Error())
-		}
-		logLine += "\n"
-
-		fmt.Print(logLine)
-
-		// Write to log file if specified
-		if logFile != "" {
-			logMutex.Lock()
-			// Ensure log directory exists
-			if logDir := filepath.Dir(logFile); logDir != "" {
-				_ = os.MkdirAll(logDir, 0755)
-			}
-			f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err == nil {
-				_, _ = f.WriteString(logLine)
-				_ = f.Close()
-			}
-			logMutex.Unlock()
-		}
-		if rl.archiveErr != nil {
-			// Prevent net/http from ending an incomplete ZIP as a successful response.
-			panic(http.ErrAbortHandler)
-		}
-	})
 }

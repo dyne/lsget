@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -82,7 +83,13 @@ func TestSitemapServedFromMemory(t *testing.T) {
 func TestSitemapPeriodicRefresh(t *testing.T) {
 	root := t.TempDir()
 	s := newServer(root, 4096, "", "https://files.example.com")
-	s.startSitemapGenerator(t.Context(), 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
+	ready, done := s.startSitemapGenerator(ctx, 10*time.Millisecond, io.Discard, io.Discard)
+	t.Cleanup(func() {
+		cancel()
+		awaitSessionSignal(t, done, "sitemap worker shutdown")
+	})
+	awaitSessionSignal(t, ready, "initial sitemap generation")
 	if s.sitemap.Load() == nil {
 		t.Fatal("generator did not cache the initial sitemap")
 	}

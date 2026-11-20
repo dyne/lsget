@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -328,82 +327,4 @@ func TestHandleComplete_Filters(t *testing.T) {
 			t.Fatalf("filters failed: %#v", cr.Items)
 		}
 	}
-}
-
-// ---- main() ----
-
-type exitPanic struct{ code int }
-
-func TestMain_VersionFlag(t *testing.T) {
-	oldExit := exitFunc
-	defer func() { exitFunc = oldExit }()
-	exitFunc = func(code int) { panic(exitPanic{code}) }
-
-	// reset flag set
-	flag.CommandLine = flag.NewFlagSet("lsget", flag.ContinueOnError)
-	os.Args = []string{"lsget", "-version"}
-	defer func() {
-		if r := recover(); r != nil {
-			if ep, ok := r.(exitPanic); ok {
-				if ep.code != 0 {
-					t.Fatalf("exit code: %d", ep.code)
-				}
-			} else {
-				panic(r)
-			}
-		}
-	}()
-	main()
-}
-
-func TestMain_InvalidDir(t *testing.T) {
-	oldExit := exitFunc
-	defer func() { exitFunc = oldExit }()
-	exitFunc = func(code int) { panic(exitPanic{code}) }
-	flag.CommandLine = flag.NewFlagSet("lsget", flag.ContinueOnError)
-	os.Args = []string{"lsget", "-dir", filepath.Join(os.TempDir(), "no_such_dir_hopefully___")}
-	defer func() {
-		if r := recover(); r != nil {
-			if ep, ok := r.(exitPanic); ok {
-				if ep.code != 1 {
-					t.Fatalf("exit code: %d", ep.code)
-				}
-			} else {
-				panic(r)
-			}
-		}
-	}()
-	main()
-}
-
-func TestMain_ListenPaths(t *testing.T) {
-	oldExit := exitFunc
-	defer func() { exitFunc = oldExit }()
-	oldListen := listenAndServe
-	defer func() { listenAndServe = oldListen }()
-	exitFunc = func(code int) { panic(exitPanic{code}) }
-
-	// OK path (ErrServerClosed)
-	listenAndServe = func(*http.Server) error { return http.ErrServerClosed }
-	flag.CommandLine = flag.NewFlagSet("lsget", flag.ContinueOnError)
-	dir := makeTempDir(t)
-	os.Args = []string{"lsget", "-dir", dir}
-	main() // should not panic
-
-	// Error path
-	listenAndServe = func(*http.Server) error { return errors.New("boom") }
-	flag.CommandLine = flag.NewFlagSet("lsget", flag.ContinueOnError)
-	os.Args = []string{"lsget", "-dir", dir}
-	defer func() {
-		if r := recover(); r != nil {
-			if ep, ok := r.(exitPanic); ok {
-				if ep.code != 1 {
-					t.Fatalf("exit code: %d", ep.code)
-				}
-			} else {
-				panic(r)
-			}
-		}
-	}()
-	main()
 }

@@ -213,7 +213,7 @@ func TestHandleStaticFile(t *testing.T) {
 
 func TestLogRequests(t *testing.T) {
 	h := httpHandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
-	wrapped := logRequests(h)
+	wrapped := newTestServer(t).logRequests(h)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/ping", nil)
 	wrapped.ServeHTTP(w, r)

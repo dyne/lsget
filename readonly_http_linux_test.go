@@ -69,14 +69,14 @@ func testReadOnlyServerRuns(t *testing.T, binary, content, note string, before [
 				}
 			}
 		})
-		baseURL, pid := startReadOnlyServer(t, binary, t.TempDir(), content, note,
+		baseURL, process := startReadOnlyServer(t, binary, t.TempDir(), content, note,
 			"-pid", pidFile, "-logfile", logFile, "-baseurl", readOnlySitemapBase, "-sitemap", "0")
 		data, err := os.ReadFile(pidFile)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(data) != strconv.Itoa(pid) {
-			t.Fatalf("PID file = %q, want %d", data, pid)
+		if string(data) != strconv.Itoa(process.Pid) {
+			t.Fatalf("PID file = %q, want %d", data, process.Pid)
 		}
 		browser := newReadOnlyBrowser(t, baseURL)
 		body, _ := browser.get("/sitemap.xml", http.StatusOK, "application/xml")
@@ -90,22 +90,37 @@ func testReadOnlyServerRuns(t *testing.T, binary, content, note string, before [
 		newReadOnlyBrowser(t, baseURL).checkSitemapRefresh()
 	})
 
-	t.Run("unwritable-pid", func(t *testing.T) {
-		checkReadOnlyManifestAfterCleanup(t, content, before)
-		pidFile := filepath.Join(content, "lsget.pid")
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, binary, "-addr", "127.0.0.1:0", "-dir", content, "-pid", pidFile)
-		configureReadOnlyCommand(cmd, t.TempDir())
-		output, err := cmd.CombinedOutput()
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 1 ||
-			!strings.Contains(string(output), "failed to create PID file:") ||
-			!strings.Contains(string(output), pidFile) || !strings.Contains(string(output), "permission denied") {
-			t.Fatalf("unwritable PID file: %v, output %q", err, output)
+	for _, tc := range []struct{ name, flag, path, message string }{
+		{"unwritable-pid", "-pid", "lsget.pid", "configuration error: failed to create PID file"},
+		{"unwritable-log", "-logfile", "logs/access.log", "configuration error: failed to open log file"},
+		{"read-only-log-file", "-logfile", "nested/note.txt", "configuration error: failed to open log file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkReadOnlyManifestAfterCleanup(t, content, before)
+			path := filepath.Join(content, tc.path)
+			checkCLIStartupFailure(t, binary, content, []string{tc.flag, path}, tc.message, path, "permission denied")
+			t.Logf("%s reported permission denied as UID %d", tc.flag, os.Geteuid())
+		})
+	}
+	testReadOnlyCLILifecycle(t, binary, content, note, before)
+}
+
+func checkCLIStartupFailure(t *testing.T, binary, content string, args []string, messages ...string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, append([]string{"-addr", "127.0.0.1:0", "-dir", content}, args...)...)
+	configureReadOnlyCommand(cmd, t.TempDir())
+	output, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || strings.Contains(string(output), "Serving ") {
+		t.Fatalf("startup exit: %v, output %q", err, output)
+	}
+	for _, message := range messages {
+		if !strings.Contains(string(output), message) {
+			t.Fatalf("startup output %q lacks %q", output, message)
 		}
-		t.Log("unwritable PID path reported a startup error")
-	})
+	}
 }
 
 type readOnlyBrowser struct {

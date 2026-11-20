@@ -260,8 +260,8 @@ func (w *gatedArchiveWriter) Write(p []byte) (int, error) {
 
 func testArchiveWorkRelease(t *testing.T, writerError bool) {
 	t.Helper()
-	logPath := captureArchiveLog(t)
 	s := newTestServer(t)
+	logPath := captureArchiveLog(t, s)
 	s.workSlots = make(chan struct{}, 1)
 	handler := s.httpServer("").Handler
 	raw := make([]byte, 192*1024)
@@ -331,6 +331,6 @@ func testArchiveWorkRelease(t *testing.T, writerError bool) {
 	if writerError {
 		cause = errArchiveFixtureWrite.Error()
 	}
-	checkArchiveFailureLog(t, logPath, "/api/download?dir=/archive", "write ZIP entry", cause)
+	checkArchiveFailureLog(t, logPath, "GET /api/download HTTP/1.1", "write ZIP entry", cause)
 	t.Log("a later request acquired the released slot and received a complete archive")
 }

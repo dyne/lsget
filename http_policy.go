@@ -39,7 +39,7 @@ func (s *server) httpServer(addr string) *http.Server {
 	}
 	return &http.Server{
 		Addr:              addr,
-		Handler:           logRequests(mux),
+		Handler:           s.logRequests(mux),
 		MaxHeaderBytes:    maxRequestHeaders,
 		ReadHeaderTimeout: requestHeaderLimit,
 		ReadTimeout:       requestReadLimit,
