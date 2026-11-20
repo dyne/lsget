@@ -117,6 +117,10 @@ To start using lsget run the following commands
 ```
 Open your browser at `http://localhost:8080` and enjoy the neon green shell.
 
+### Direct file links
+
+A file in the served directory can be shared by its path, such as `/eudi/report.pdf`, or with the `file` query parameter, such as `/?file=eudi/report.pdf`. Both links resolve from the served root and use the same content type and download headers. URL-encode special characters in the query value, for example `/?file=eudi/meeting%20notes.pdf`. The `file` parameter returns 404 for missing or ignored files and for directories.
+
 ### Configuration flags
 ```
 ./lsget -h

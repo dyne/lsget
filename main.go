@@ -873,10 +873,16 @@ type configResp struct {
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Check for no-JS fallback query parameter
-	noJS := r.URL.Query().Get("nojs") == "1"
+	query := r.URL.Query()
+	noJS := query.Get("nojs") == "1"
 
-	// For root path, check for index.html first
 	if r.URL.Path == "/" {
+		if query.Has("file") {
+			s.serveQueryFile(w, r, query.Get("file"))
+			return
+		}
+
+		// Use the served directory's index.html if present.
 		indexPath := filepath.Join(s.rootAbs, "index.html")
 		if indexInfo, err := os.Stat(indexPath); err == nil && !indexInfo.IsDir() {
 			// Serve index.html instead of lsget interface
@@ -939,12 +945,54 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) serveQueryFile(w http.ResponseWriter, r *http.Request, name string) {
+	localPath, err := filepath.Localize(strings.TrimPrefix(name, "/"))
+	if err != nil || localPath == "." {
+		http.NotFound(w, r)
+		return
+	}
+
+	root, err := os.OpenRoot(s.rootAbs)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer func() { _ = root.Close() }()
+
+	info, err := root.Stat(localPath)
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	file, err := root.Open(localPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	if s.prepareDirectFile(w, r, filepath.Join(s.rootAbs, localPath)) {
+		http.ServeContent(w, r, filepath.Base(localPath), info.ModTime(), file)
+	}
+}
+
 func (s *server) serveFile(w http.ResponseWriter, r *http.Request, realPath string, info os.FileInfo) {
+	if s.prepareDirectFile(w, r, realPath) {
+		http.ServeFile(w, r, realPath)
+	}
+}
+
+func (s *server) prepareDirectFile(w http.ResponseWriter, r *http.Request, realPath string) bool {
 	// Check if file should be ignored based on .lsgetignore patterns
 	fileName := filepath.Base(realPath)
 	if s.shouldIgnore(realPath, fileName) {
 		http.NotFound(w, r)
-		return
+		return false
 	}
 
 	// Set appropriate content type based on file extension
@@ -961,8 +1009,7 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, realPath stri
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
 	}
 
-	// Serve the file
-	http.ServeFile(w, r, realPath)
+	return true
 }
 
 func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request, initialPath string) {

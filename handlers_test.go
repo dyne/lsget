@@ -371,6 +371,76 @@ func TestHandleIndex_ExistingDirSetsInitialPath(t *testing.T) {
 	}
 }
 
+func TestHandleIndex_DirectFileQuery(t *testing.T) {
+	s := newServer(t.TempDir(), 4*1024, "", "")
+	const pdf = "%PDF-1.7\nexample document\n"
+	const index = "<html>home page</html>"
+	if err := os.Mkdir(filepath.Join(s.rootAbs, "eudi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, contents := range map[string]string{
+		"index.html":   index,
+		".lsgetignore": "eudi/hidden.pdf\n",
+		"eudi/cryptographers-feedback-june2024.pdf": pdf,
+		"eudi/feedback + notes.pdf":                 pdf,
+		"eudi/hidden.pdf":                           pdf,
+	} {
+		if err := os.WriteFile(filepath.Join(s.rootAbs, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const attachment = `attachment; filename="cryptographers-feedback-june2024.pdf"`
+	tests := []struct {
+		name        string
+		target      string
+		status      int
+		body        string
+		disposition string
+	}{
+		{"direct path", "/eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, attachment},
+		{"query path", "/?file=eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, attachment},
+		{"root-relative query path", "/?file=/eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, attachment},
+		{"encoded filename", "/?file=eudi%2Ffeedback%20%2B%20notes.pdf", http.StatusOK, pdf, `attachment; filename="feedback + notes.pdf"`},
+		{"missing file", "/?file=eudi/missing.pdf", http.StatusNotFound, "", ""},
+		{"directory", "/?file=eudi", http.StatusNotFound, "", ""},
+		{"ignored file", "/?file=eudi/hidden.pdf", http.StatusNotFound, "", ""},
+		{"empty file parameter", "/?file=", http.StatusNotFound, "", ""},
+		{"root index", "/", http.StatusOK, index, ""},
+		{"root-level query file", "/?file=index.html", http.StatusOK, index, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			s.handleIndex(w, httptest.NewRequest(http.MethodGet, tt.target, nil))
+			if w.Code != tt.status {
+				t.Fatalf("status = %d, want %d", w.Code, tt.status)
+			}
+			if tt.status == http.StatusOK && w.Body.String() != tt.body {
+				t.Errorf("body = %q, want %q", w.Body.String(), tt.body)
+			}
+			if got := w.Header().Get("Content-Disposition"); got != tt.disposition {
+				t.Errorf("Content-Disposition = %q, want %q", got, tt.disposition)
+			}
+		})
+	}
+
+	t.Run("symlink outside the served root", func(t *testing.T) {
+		outsideFile := filepath.Join(t.TempDir(), "outside.pdf")
+		if err := os.WriteFile(outsideFile, []byte(pdf), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outsideFile, filepath.Join(s.rootAbs, "link.pdf")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		w := httptest.NewRecorder()
+		s.handleIndex(w, httptest.NewRequest(http.MethodGet, "/?file=link.pdf", nil))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+}
+
 func TestNoJSHTMLEscaping(t *testing.T) {
 	s := newTestServer(t)
 
