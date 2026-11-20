@@ -32,9 +32,9 @@ Perfect for:
 | **TUI in browser**   | Full-screen Terminal User Interface with reactive updates powered by **[DataStar](https://github.com/starfederation/datastar)**; smooth keyboard handling & command history. |
 | **CDN-ready**        | Instantly serve files from any directory with shareable URLs and download capabilities. |
 | File operations      | `pwd`, `ls [-l] [-h]`, `cd DIR`, `cat FILE`, `download FILE`, `tree`, `find`, `grep`. |
-| Smart autocompletion | Tab‑completes directories and files (text‑only, size‑limited for `cat`). |
+| Smart autocompletion | **Complete** suggests directories and files, with text and size limits for `cat` suggestions. |
 | Colourised output    | Directories in bright blue (Ubuntu style) with trailing `/`, executable files highlighted. |
-| Session isolation    | Per‑browser *in‑memory* CWD tracked via cookie — multi-user ready. |
+| Session isolation    | Each browser tab keeps its own working directory. |
 | Live reload          | `task dev` ⇒ [Air](https://github.com/cosmtrek/air) rebuilds `main.go` on save for rapid development. |
 | Zero‑config binary   | `go run .` or `go build` produces a single executable with embedded assets. |
 | Supply chain security| JavaScript dependencies vendored locally to reduce supply chain attacks. |
@@ -125,9 +125,11 @@ Direct file links and terminal downloads respect `.lsgetignore` rules on files a
 
 ### Terminal sessions
 
-Each terminal session stores its working directory in memory and uses an `sid` cookie marked `HttpOnly` and `SameSite=Lax`. Sessions expire after 30 minutes without a request that uses the working directory. The server retains up to 4,096 sessions and evicts the longest-idle session when it needs room. In-flight requests keep their sessions. If all slots are busy, requests that need a new session receive HTTP 503 and can retry. A returning browser with an expired or evicted session starts at the served root unless it opens a specific directory.
+Each browser tab opens at the directory in its URL and keeps track of its own working directory. The terminal sends it in the `cwd` query parameter on `/api/config`, `/api/exec`, and `/api/complete` requests. The tab retains its directory across server restarts and operates independently of the server session pool.
 
-Direct downloads and archive requests that specify their directory bypass terminal sessions. lsget sets `Secure` on session cookies for TLS requests. When an HTTPS-only reverse proxy terminates TLS, set `LSGET_SECURE_SESSION_COOKIE=true` or pass `-secure-session-cookie` and keep the lsget listener reachable only by the proxy. Forwarding headers do not control the cookie's `Secure` attribute.
+API callers that omit `cwd` use an in-memory session for operations that require a working directory. The `sid` cookie identifies the session and carries `HttpOnly` and `SameSite=Lax`. A session expires after 30 minutes without a request that uses it. The server retains up to 4,096 sessions and evicts the longest-idle session when it needs room. In-flight requests keep their sessions. If all slots are busy, requests that need a new session receive HTTP 503 and can retry. Callers with expired or evicted sessions, or sessions lost during a restart, start at the served root unless they specify a directory.
+
+Direct file links, exact-path downloads, and archive requests with an explicit directory bypass server sessions. lsget sets `Secure` on session cookies for TLS requests. When an HTTPS-only reverse proxy terminates TLS, set `LSGET_SECURE_SESSION_COOKIE=true` or pass `-secure-session-cookie` and keep the lsget listener reachable only by the proxy. Forwarding headers have no effect on the cookie's `Secure` attribute.
 
 ### HTTP request limits
 
@@ -502,9 +504,9 @@ Display the list of available commands.
 
 #### Special Features
 
-- **Tab completion** — Press `Tab` to autocomplete file and directory names
-- **Command history** — Use `↑` and `↓` arrow keys to navigate through previous commands
-- **Session isolation** — Each browser maintains its own current working directory via cookies
+- **Path completion** — Use **Complete** for file and directory suggestions. Use the arrow keys to choose a suggestion, `Enter` to use it, or `Escape` to dismiss the list.
+- **Command history** — Use `↑` and `↓` to recall previous commands while the suggestions are closed.
+- **Session isolation** — Navigate independently in each browser tab.
 
 
 **[🔝 back to top](#toc)**

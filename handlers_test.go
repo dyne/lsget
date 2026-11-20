@@ -4,11 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -511,8 +513,28 @@ func TestEmbeddedShellPolicy(t *testing.T) {
 	before, rest, found := strings.Cut(policy, "'nonce-")
 	nonce, _, closed := strings.Cut(rest, "'")
 	if !found || !closed || nonce == "" || before != "default-src 'none'; script-src " ||
-		strings.Count(first.Body.String(), `nonce="`+nonce+`"`) != 4 {
-		t.Fatal("embedded script and style nonces did not match the policy")
+		!strings.Contains(policy, "style-src 'nonce-"+nonce+"'") {
+		t.Fatal("embedded shell policy did not use the same nonce for scripts and styles")
+	}
+	tags := regexp.MustCompile(`(?i)<(?:script|style)(?:\s[^>]*)?>`).FindAllString(first.Body.String(), -1)
+	tagNames := make(map[string]bool)
+	for _, tag := range tags {
+		var block struct {
+			XMLName xml.Name
+			Nonce   string `xml:"nonce,attr"`
+		}
+		decoder := xml.NewDecoder(strings.NewReader(strings.TrimSuffix(tag, ">") + "/>"))
+		decoder.Strict = false
+		if err := decoder.Decode(&block); err != nil {
+			t.Fatalf("could not read embedded tag %q: %v", tag, err)
+		}
+		if block.Nonce != nonce {
+			t.Fatalf("embedded tag %q did not use the nonce from the policy", tag)
+		}
+		tagNames[strings.ToLower(block.XMLName.Local)] = true
+	}
+	if !tagNames["script"] || !tagNames["style"] {
+		t.Fatal("embedded shell did not contain both script and style tags")
 	}
 	if first.Header().Get(reportOnly) != "" || first.Header().Get("Cache-Control") != "no-store" ||
 		!strings.Contains(policy, " 'unsafe-eval'") || strings.Contains(policy, "'unsafe-inline'") ||
