@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -469,19 +470,6 @@ func matchesIgnoreRules(files fs.FS, filePath string) bool {
 
 // ===== Utilities =====
 
-// sitemapEntry represents an entry in the sitemap
-type sitemapEntry struct {
-	loc        string
-	lastmod    string
-	isImage    bool
-	imageURL   string
-	isVideo    bool
-	videoURL   string
-	isDocument bool
-	isDir      bool
-	fileSize   int64
-}
-
 type sitemapSnapshot struct {
 	content     string
 	generatedAt time.Time
@@ -519,120 +507,197 @@ func (s *server) getSitemap(ctx context.Context, refresh bool) (*sitemapSnapshot
 
 // generateSitemap builds the XML from the files currently in the served root.
 func (s *server) generateSitemap(ctx context.Context) (string, error) {
+	base, err := sitemapBaseURL(s.baseURL)
+	if err != nil {
+		return "", err
+	}
 	root, err := os.OpenRoot(s.rootAbs)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = root.Close() }()
 
-	var entries []sitemapEntry
-	addEntry := func(name string, info fs.FileInfo) {
-		location := s.baseURL + cleanVirtual(name)
-		// Format lastmod in W3C Datetime format (ISO 8601)
-		lastmod := info.ModTime().Format(time.RFC3339)
-
-		entry := sitemapEntry{
-			loc:     location,
-			lastmod: lastmod,
-			isDir:   info.IsDir(),
-		}
-
-		// Check file category for special handling
-		if !info.IsDir() {
-			entry.fileSize = info.Size()
-			category := getFileCategory(path.Base(name))
-			switch category {
-			case FileCategoryImage:
-				entry.isImage = true
-				entry.imageURL = location
-			case FileCategoryVideo:
-				entry.isVideo = true
-				entry.videoURL = location
-			case FileCategoryDocument:
-				entry.isDocument = true
-			}
-		}
-
-		entries = append(entries, entry)
-	}
-
 	info, err := visibleInfo(root, ".")
 	if err != nil {
 		return "", err
 	}
-	addEntry(".", info)
+	output := &sitemapOutput{}
+	enc := xml.NewEncoder(contextWriter{ctx, output})
+	enc.Indent("", "  ")
+	if err := enc.EncodeToken(xml.ProcInst{Target: "xml", Inst: []byte(`version="1.0" encoding="UTF-8"`)}); err != nil {
+		return "", err
+	}
+	urlset := xml.StartElement{
+		Name: xml.Name{Local: "urlset"},
+		Attr: []xml.Attr{
+			{Name: xml.Name{Local: "xmlns"}, Value: "http://www.sitemaps.org/schemas/sitemap/0.9"},
+			{Name: xml.Name{Local: "xmlns:image"}, Value: "http://www.google.com/schemas/sitemap-image/1.1"},
+			{Name: xml.Name{Local: "xmlns:video"}, Value: "http://www.google.com/schemas/sitemap-video/1.1"},
+			{Name: xml.Name{Local: "xmlns:xhtml"}, Value: "http://www.w3.org/1999/xhtml"},
+		},
+	}
+	if err := enc.EncodeToken(urlset); err != nil {
+		return "", err
+	}
+	if err := writeSitemapEntry(enc, base, ".", info); err != nil {
+		return "", err
+	}
 	err = walkVisibleDir(ctx, newWorkBudget(), root, ".", func(entry visibleEntry) (bool, error) {
 		if entry.name == "sitemap.xml" {
 			return false, nil
 		}
-		addEntry(entry.name, entry.info)
-		return true, nil
+		return true, writeSitemapEntry(enc, base, entry.name, entry.info)
 	})
-
 	if err != nil {
 		return "", err
 	}
+	if err := enc.EncodeToken(urlset.End()); err != nil {
+		return "", err
+	}
+	if err := enc.EncodeToken(xml.CharData("\n")); err != nil {
+		return "", err
+	}
+	if err := enc.Close(); err != nil {
+		return "", err
+	}
+	return output.content.String(), nil
+}
 
-	// Build XML with proper namespaces
-	var xml strings.Builder
-	xml.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	xml.WriteString(`<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"` + "\n")
-	xml.WriteString(`        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"` + "\n")
-	xml.WriteString(`        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"` + "\n")
-	xml.WriteString(`        xmlns:xhtml="http://www.w3.org/1999/xhtml">` + "\n")
-
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return "", err
+func sitemapBaseURL(raw string) (string, error) {
+	if len(raw) > maxSitemapBytes {
+		return "", errWorkLimit
+	}
+	invalid := errors.New("invalid sitemap base URL: expected a canonical absolute HTTP(S) URL without credentials, query or fragment")
+	base, err := url.Parse(raw)
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Hostname() == "" ||
+		base.User != nil || base.ForceQuery || base.RawQuery != "" || strings.Contains(raw, "#") ||
+		strings.HasSuffix(base.Host, ":") || strings.Contains(strings.ToLower(base.EscapedPath()), "%2f") {
+		return "", invalid
+	}
+	if port := base.Port(); port != "" {
+		if number, err := strconv.ParseUint(port, 10, 16); err != nil || number == 0 {
+			return "", invalid
 		}
-		xml.WriteString("  <url>\n")
-		xml.WriteString("    <loc>" + template.HTMLEscapeString(entry.loc) + "</loc>\n")
-		xml.WriteString("    <lastmod>" + entry.lastmod + "</lastmod>\n")
+	}
+	if prefix := strings.TrimRight(base.Path, "/"); prefix != "" && path.Clean(prefix) != prefix {
+		return "", invalid
+	}
+	return strings.TrimRight(base.String(), "/"), nil
+}
 
-		// Add changefreq and priority based on type
-		if entry.isDir {
-			xml.WriteString("    <changefreq>daily</changefreq>\n")
-			xml.WriteString("    <priority>0.8</priority>\n")
-		} else if entry.isImage {
-			xml.WriteString("    <changefreq>monthly</changefreq>\n")
-			xml.WriteString("    <priority>0.6</priority>\n")
-			// Add image-specific data using Google's image extension
-			xml.WriteString("    <image:image>\n")
-			xml.WriteString("      <image:loc>" + template.HTMLEscapeString(entry.imageURL) + "</image:loc>\n")
-			xml.WriteString("    </image:image>\n")
-		} else if entry.isVideo {
-			xml.WriteString("    <changefreq>monthly</changefreq>\n")
-			xml.WriteString("    <priority>0.7</priority>\n")
-			// Add video-specific data using Google's video extension
-			xml.WriteString("    <video:video>\n")
-			xml.WriteString("      <video:content_loc>" + template.HTMLEscapeString(entry.videoURL) + "</video:content_loc>\n")
-			// Extract filename without extension for title
-			videoName := filepath.Base(entry.videoURL)
-			videoTitle := videoName[:len(videoName)-len(filepath.Ext(videoName))]
-			xml.WriteString("      <video:title>" + template.HTMLEscapeString(videoTitle) + "</video:title>\n")
-			xml.WriteString("      <video:description>" + template.HTMLEscapeString("Video file: "+videoName) + "</video:description>\n")
-			xml.WriteString("    </video:video>\n")
-		} else if entry.isDocument {
-			// Documents (PDFs, DOCs, etc.) get higher priority as they're often primary content
-			xml.WriteString("    <changefreq>monthly</changefreq>\n")
-			xml.WriteString("    <priority>0.9</priority>\n")
-			// Add a comment to indicate this is a document (no official schema, but helpful for debugging)
-			docName := filepath.Base(entry.loc)
-			xml.WriteString("    <!-- Document: " + template.HTMLEscapeString(docName) + " (" + formatHumanSize(entry.fileSize) + ") -->\n")
-		} else {
-			xml.WriteString("    <changefreq>weekly</changefreq>\n")
-			xml.WriteString("    <priority>0.5</priority>\n")
+type sitemapOutput struct {
+	content strings.Builder
+}
+
+func (out *sitemapOutput) Write(p []byte) (int, error) {
+	if len(p) > maxSitemapBytes-out.content.Len() {
+		return 0, errWorkLimit
+	}
+	return out.content.Write(p)
+}
+
+type sitemapField struct {
+	name  string
+	value string
+}
+
+func writeSitemapFields(enc *xml.Encoder, fields ...sitemapField) error {
+	for _, field := range fields {
+		element := xml.StartElement{Name: xml.Name{Local: field.name}}
+		if err := enc.EncodeToken(element); err != nil {
+			return err
 		}
+		if err := enc.EncodeToken(xml.CharData(field.value)); err != nil {
+			return err
+		}
+		if err := enc.EncodeToken(element.End()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-		xml.WriteString("  </url>\n")
-		if xml.Len() > maxSitemapBytes-len("</urlset>\n") {
-			return "", errWorkLimit
+func writeSitemapExtension(enc *xml.Encoder, name string, fields ...sitemapField) error {
+	element := xml.StartElement{Name: xml.Name{Local: name}}
+	if err := enc.EncodeToken(element); err != nil {
+		return err
+	}
+	if err := writeSitemapFields(enc, fields...); err != nil {
+		return err
+	}
+	return enc.EncodeToken(element.End())
+}
+
+func sitemapLocation(base, name string) string {
+	if name == "." {
+		return base + "/"
+	}
+	var location strings.Builder
+	location.Grow(len(base) + len(name) + 1)
+	location.WriteString(base)
+	// The rooted walk supplies a clean slash-separated name.
+	for name != "" {
+		var segment string
+		segment, name, _ = strings.Cut(name, "/")
+		location.WriteByte('/')
+		location.WriteString(url.PathEscape(segment))
+	}
+	return location.String()
+}
+
+func writeSitemapEntry(enc *xml.Encoder, base, name string, info fs.FileInfo) error {
+	location := sitemapLocation(base, name)
+	filename := path.Base(name)
+	category := FileCategoryUnknown
+	frequency, priority := "weekly", "0.5"
+	if info.IsDir() {
+		frequency, priority = "daily", "0.8"
+	} else {
+		category = getFileCategory(filename)
+		switch category {
+		case FileCategoryImage:
+			frequency, priority = "monthly", "0.6"
+		case FileCategoryVideo:
+			frequency, priority = "monthly", "0.7"
+		case FileCategoryDocument:
+			frequency, priority = "monthly", "0.9"
 		}
 	}
 
-	xml.WriteString("</urlset>\n")
-
-	return xml.String(), nil
+	element := xml.StartElement{Name: xml.Name{Local: "url"}}
+	if err := enc.EncodeToken(element); err != nil {
+		return err
+	}
+	if err := writeSitemapFields(enc,
+		sitemapField{"loc", location},
+		sitemapField{"lastmod", info.ModTime().Format(time.RFC3339)},
+		sitemapField{"changefreq", frequency},
+		sitemapField{"priority", priority},
+	); err != nil {
+		return err
+	}
+	var err error
+	switch category {
+	case FileCategoryImage:
+		err = writeSitemapExtension(enc, "image:image", sitemapField{"image:loc", location})
+	case FileCategoryVideo:
+		err = writeSitemapExtension(enc, "video:video",
+			sitemapField{"video:content_loc", location},
+			sitemapField{"video:title", strings.TrimSuffix(filename, path.Ext(filename))},
+			sitemapField{"video:description", "Video file: " + filename},
+		)
+	case FileCategoryDocument:
+		label := url.PathEscape(filename)
+		if strings.Contains(label, "--") {
+			// XML comments cannot contain adjacent hyphens.
+			label = strings.ReplaceAll(label, "-", "%2D")
+		}
+		err = enc.EncodeToken(xml.Comment(" Document: " + label + " (" + formatHumanSize(info.Size()) + ") "))
+	}
+	if err != nil {
+		return err
+	}
+	return enc.EncodeToken(element.End())
 }
 
 // startSitemapGenerator starts periodic sitemap regeneration
@@ -2326,12 +2391,12 @@ func sendZipArchive(ctx context.Context, w http.ResponseWriter, root *os.Root, f
 		}
 		source, info, err := openVisibleFile(root, rootedName(file.virtualPath))
 		if err != nil {
-			continue
+			return fmt.Errorf("open ZIP entry %q: %w", file.relativePath, err)
 		}
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			_ = source.Close()
-			continue
+			return fmt.Errorf("prepare ZIP entry %q: %w", file.relativePath, err)
 		}
 		header.Name = file.relativePath
 		header.Method = zip.Deflate
@@ -2340,15 +2405,28 @@ func sendZipArchive(ctx context.Context, w http.ResponseWriter, root *os.Root, f
 		if err == nil {
 			_, err = io.Copy(entry, contextReader{ctx, source})
 		}
-		_ = source.Close()
-		if err != nil {
-			return err
+		if err := errors.Join(err, source.Close()); err != nil {
+			return fmt.Errorf("write ZIP entry %q: %w", file.relativePath, err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return zipWriter.Close()
+	if err := zipWriter.Close(); err != nil {
+		return fmt.Errorf("finalize ZIP: %w", err)
+	}
+	return nil
+}
+
+func serveZipArchive(ctx context.Context, w http.ResponseWriter, root *os.Root, files []fileInfo, filename string) {
+	if err := sendZipArchive(ctx, w, root, files, filename); err != nil {
+		if response, ok := w.(*responseLogger); ok {
+			// Let the access log record the failure before aborting the response.
+			response.archiveErr = err
+			return
+		}
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // buildTree renders the visible children of a directory and their descendants.
@@ -2456,7 +2534,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		if ctx.Err() != nil || writeArchivePreparationError(w, err) {
 			return
 		}
-		_ = sendZipArchive(ctx, w, root, files, downloadDirectoryName(root, name)+".zip")
+		serveZipArchive(ctx, w, root, files, downloadDirectoryName(root, name)+".zip")
 		return
 	}
 
@@ -2481,7 +2559,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		if writeArchivePreparationError(w, err) {
 			return
 		}
-		_ = sendZipArchive(ctx, w, root, files, "archive.zip")
+		serveZipArchive(ctx, w, root, files, "archive.zip")
 		return
 	}
 
@@ -2751,6 +2829,7 @@ type responseLogger struct {
 	http.ResponseWriter
 	statusCode int
 	size       int
+	archiveErr error
 }
 
 func (rl *responseLogger) WriteHeader(code int) {
@@ -2807,8 +2886,12 @@ func logRequests(next http.Handler) http.Handler {
 			sizeStr = fmt.Sprintf("%d", responseSize)
 		}
 
-		logLine := fmt.Sprintf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"\n",
+		logLine := fmt.Sprintf("%s %s %s %s \"%s\" %d %s \"%s\" \"%s\"",
 			ip, "-", user, timestamp, requestLine, statusCode, sizeStr, referer, userAgent)
+		if rl.archiveErr != nil {
+			logLine += fmt.Sprintf(" archive=incomplete error=%q", rl.archiveErr.Error())
+		}
+		logLine += "\n"
 
 		fmt.Print(logLine)
 
@@ -2825,6 +2908,10 @@ func logRequests(next http.Handler) http.Handler {
 				_ = f.Close()
 			}
 			logMutex.Unlock()
+		}
+		if rl.archiveErr != nil {
+			// Prevent net/http from ending an incomplete ZIP as a successful response.
+			panic(http.ErrAbortHandler)
 		}
 	})
 }

@@ -260,6 +260,7 @@ func (w *gatedArchiveWriter) Write(p []byte) (int, error) {
 
 func testArchiveWorkRelease(t *testing.T, writerError bool) {
 	t.Helper()
+	logPath := captureArchiveLog(t)
 	s := newTestServer(t)
 	s.workSlots = make(chan struct{}, 1)
 	handler := s.httpServer("").Handler
@@ -276,8 +277,10 @@ func testArchiveWorkRelease(t *testing.T, writerError bool) {
 	w := &gatedArchiveWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{}), resume: make(chan struct{}), fail: writerError}
 	unblock := sync.OnceFunc(func() { close(w.resume) })
 	settled := make(chan struct{})
+	var terminal any
 	go func() {
 		defer close(settled)
+		defer func() { terminal = recover() }()
 		handler.ServeHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/download?dir=/archive", nil))
 	}()
 	t.Cleanup(func() {
@@ -308,6 +311,9 @@ func testArchiveWorkRelease(t *testing.T, writerError bool) {
 	unblock()
 	awaitSessionSignal(t, settled, "archive termination")
 	t.Log("archive gate released and worker settled")
+	if terminal != http.ErrAbortHandler {
+		t.Fatalf("interrupted ZIP terminated with %v, want http.ErrAbortHandler", terminal)
+	}
 	if w.writes != 1 || len(s.workSlots) != 0 {
 		t.Fatalf("interrupted ZIP attempted %d downstream writes and retained %d slots", w.writes, len(s.workSlots))
 	}
@@ -321,5 +327,10 @@ func testArchiveWorkRelease(t *testing.T, writerError bool) {
 	if later.Code != http.StatusOK || err != nil || len(zipped.File) != 1 || zipped.File[0].Name != "archive/sample.bin" {
 		t.Fatalf("released slot did not admit a complete ZIP: status %d, error %v", later.Code, err)
 	}
+	cause := context.Canceled.Error()
+	if writerError {
+		cause = errArchiveFixtureWrite.Error()
+	}
+	checkArchiveFailureLog(t, logPath, "/api/download?dir=/archive", "write ZIP entry", cause)
 	t.Log("a later request acquired the released slot and received a complete archive")
 }
