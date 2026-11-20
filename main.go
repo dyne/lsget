@@ -237,8 +237,8 @@ func getFileCategory(filename string) FileCategory {
 
 // readDocFile returns the raw contents of documentation files if present in dir.
 // Supports README.md, .txt, .nfo, and .rst files in priority order.
-func readDocFile(dir string) (string, string) {
-	ents, err := os.ReadDir(dir)
+func readDocFile(root *os.Root, dir string) (string, string) {
+	ents, err := readVisibleDir(root, dir)
 	if err != nil {
 		return "", ""
 	}
@@ -249,23 +249,16 @@ func readDocFile(dir string) (string, string) {
 		fileType string
 	}{
 		{"README.md", "markdown"},
-		{"readme.md", "markdown"},
 		{"README.txt", "text"},
-		{"readme.txt", "text"},
 		{"README.rst", "rst"},
-		{"readme.rst", "rst"},
 		{"README.nfo", "nfo"},
-		{"readme.nfo", "nfo"},
 	}
 
 	// First, try exact matches in priority order
 	for _, docFile := range docFiles {
 		for _, e := range ents {
-			if !e.Type().IsRegular() {
-				continue
-			}
 			if strings.EqualFold(e.Name(), docFile.pattern) {
-				b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+				b, err := readVisibleFile(root, path.Join(dir, e.Name()))
 				if err != nil {
 					continue
 				}
@@ -276,34 +269,15 @@ func readDocFile(dir string) (string, string) {
 
 	// Then try any file with supported extensions
 	for _, e := range ents {
-		if !e.Type().IsRegular() {
-			continue
-		}
-		name := strings.ToLower(e.Name())
-		if strings.HasSuffix(name, ".md") {
-			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-			if err != nil {
-				continue
+		ext := path.Ext(strings.ToLower(e.Name()))
+		for _, docFile := range docFiles {
+			if ext == path.Ext(docFile.pattern) {
+				b, err := readVisibleFile(root, path.Join(dir, e.Name()))
+				if err == nil {
+					return string(b), docFile.fileType
+				}
+				break
 			}
-			return string(b), "markdown"
-		} else if strings.HasSuffix(name, ".txt") {
-			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-			if err != nil {
-				continue
-			}
-			return string(b), "text"
-		} else if strings.HasSuffix(name, ".rst") {
-			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-			if err != nil {
-				continue
-			}
-			return string(b), "rst"
-		} else if strings.HasSuffix(name, ".nfo") {
-			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-			if err != nil {
-				continue
-			}
-			return string(b), "nfo"
 		}
 	}
 
@@ -354,6 +328,13 @@ func newServer(rootAbs string, catMax int64, logfile, baseURL string) *server {
 
 // parseIgnoreFile reads and parses a .lsgetignore file, returning a slice of patterns
 func parseIgnoreFile(files fs.FS, ignoreFilePath string) ([]string, error) {
+	info, err := fs.Stat(files, ignoreFilePath)
+	if errors.Is(err, fs.ErrNotExist) || err == nil && !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	file, err := files.Open(ignoreFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -362,6 +343,13 @@ func parseIgnoreFile(files fs.FS, ignoreFilePath string) ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() {
+		return nil, nil
+	}
 
 	var patterns []string
 	scanner := bufio.NewScanner(file)
@@ -377,46 +365,28 @@ func parseIgnoreFile(files fs.FS, ignoreFilePath string) ([]string, error) {
 	return patterns, scanner.Err()
 }
 
-// shouldIgnore checks if a file/directory should be ignored based on .lsgetignore patterns
-// It looks for .lsgetignore files in the current directory and all parent directories up to rootAbs
-func (s *server) shouldIgnore(realPath, name string) bool {
-	relativePath, err := filepath.Rel(s.rootAbs, realPath)
-	if err != nil || !filepath.IsLocal(relativePath) {
-		return false
-	}
-	return matchesIgnoreRules(os.DirFS(s.rootAbs), filepath.ToSlash(relativePath), name, false)
-}
-
-func matchesIgnoreRules(files fs.FS, filePath, name string, checkParents bool) bool {
+func matchesIgnoreRules(files fs.FS, filePath string) bool {
 	if filePath == "." {
 		return false
 	}
-	for dir := path.Dir(filePath); ; dir = path.Dir(dir) {
+	parts := strings.Split(filePath, "/")
+	for depth := range parts {
+		dir := strings.Join(parts[:depth], "/")
 		patterns, err := parseIgnoreFile(files, path.Join(dir, ".lsgetignore"))
-		if err == nil {
-			relativePath := filePath
-			if dir != "." {
-				relativePath = strings.TrimPrefix(filePath, dir+"/")
-			}
+		if err != nil || len(patterns) == 0 {
+			continue
+		}
+		for candidate := strings.Join(parts[depth:], "/"); candidate != "."; candidate = path.Dir(candidate) {
 			for _, pattern := range patterns {
-				candidateName := name
-				for candidate := relativePath; candidate != "."; candidate = path.Dir(candidate) {
-					matchesName, _ := filepath.Match(pattern, candidateName)
-					matchesPath, _ := filepath.Match(pattern, filepath.FromSlash(candidate))
-					if matchesName || matchesPath {
-						return true
-					}
-					if !checkParents {
-						break
-					}
-					candidateName = path.Base(path.Dir(candidate))
+				matchesName, _ := filepath.Match(pattern, path.Base(candidate))
+				matchesPath, _ := filepath.Match(pattern, filepath.FromSlash(candidate))
+				if matchesName || matchesPath {
+					return true
 				}
 			}
 		}
-		if dir == "." {
-			return false
-		}
 	}
+	return false
 }
 
 // ===== Utilities =====
@@ -467,40 +437,14 @@ func (s *server) generateSitemap() (string, error) {
 	}
 	defer func() { _ = root.Close() }()
 
-	files := root.FS()
 	var entries []sitemapEntry
-	err = fs.WalkDir(files, ".", func(name string, file fs.DirEntry, err error) error {
-		if err != nil {
-			if name == "." {
-				return err
-			}
-			return nil
-		}
-
-		if name == "sitemap.xml" || matchesIgnoreRules(files, name, file.Name(), false) {
-			if file.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-
-		info, err := file.Info()
-		if err != nil {
-			if name == "." {
-				return err
-			}
-			return nil
-		}
-		vp := "/"
-		if name != "." {
-			vp = "/" + name
-		}
-
+	addEntry := func(name string, info fs.FileInfo) {
+		location := s.baseURL + cleanVirtual(name)
 		// Format lastmod in W3C Datetime format (ISO 8601)
 		lastmod := info.ModTime().Format(time.RFC3339)
 
 		entry := sitemapEntry{
-			loc:     s.baseURL + vp,
+			loc:     location,
 			lastmod: lastmod,
 			isDir:   info.IsDir(),
 		}
@@ -508,22 +452,33 @@ func (s *server) generateSitemap() (string, error) {
 		// Check file category for special handling
 		if !info.IsDir() {
 			entry.fileSize = info.Size()
-			category := getFileCategory(file.Name())
+			category := getFileCategory(path.Base(name))
 			switch category {
 			case FileCategoryImage:
 				entry.isImage = true
-				entry.imageURL = s.baseURL + vp
+				entry.imageURL = location
 			case FileCategoryVideo:
 				entry.isVideo = true
-				entry.videoURL = s.baseURL + vp
+				entry.videoURL = location
 			case FileCategoryDocument:
 				entry.isDocument = true
 			}
 		}
 
 		entries = append(entries, entry)
+	}
 
-		return nil
+	info, err := visibleInfo(root, ".")
+	if err != nil {
+		return "", err
+	}
+	addEntry(".", info)
+	err = walkVisibleDir(root, ".", func(entry visibleEntry) bool {
+		if entry.name == "sitemap.xml" {
+			return false
+		}
+		addEntry(entry.name, entry.info)
+		return true
 	})
 
 	if err != nil {
@@ -720,31 +675,6 @@ func joinVirtual(base, arg string) string {
 	return cleanVirtual(path.Join(base, arg))
 }
 
-// convert a virtual path to a real filesystem path and ensure it is
-// rooted inside s.rootAbs
-func (s *server) realFromVirtual(v string) (string, error) {
-	v = cleanVirtual(v)
-	if v == "/" {
-		return s.rootAbs, nil
-	}
-	rel := strings.TrimPrefix(v, "/")
-	fsPath := filepath.Join(s.rootAbs, filepath.FromSlash(rel))
-	abs, err := filepath.Abs(fsPath)
-	if err != nil {
-		return "", err
-	}
-	// prevent escaping the root via .. or symlinks
-	// (best-effort: compare cleaned absolute paths)
-	if abs == s.rootAbs {
-		return abs, nil
-	}
-	rel2, err := filepath.Rel(s.rootAbs, abs)
-	if err != nil || strings.HasPrefix(rel2, "..") || rel2 == ".." {
-		return "", errors.New("permission denied")
-	}
-	return abs, nil
-}
-
 // simple args parser: supports quotes ("", ”) and backslash escapes inside quotes
 func parseArgs(line string) []string {
 	var args []string
@@ -909,12 +839,11 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestPath := cleanVirtual(r.URL.Path)
-	filePath := downloadPath(requestPath)
-	files := root.FS()
-	info, err := fs.Stat(files, filePath)
+	filePath := rootedName(requestPath)
+	info, err := visibleInfo(root, filePath)
 	noJS := query.Get("nojs") == "1"
 	if err != nil {
-		if noJS || !errors.Is(err, fs.ErrNotExist) {
+		if noJS || errors.Is(err, errHiddenPath) || !errors.Is(err, fs.ErrNotExist) {
 			http.NotFound(w, r)
 		} else {
 			s.serveMainIndex(w, r, "/")
@@ -927,21 +856,24 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	indexPath := path.Join(filePath, "index.html")
-	if info, err := fs.Stat(files, indexPath); err == nil && !info.IsDir() {
+	if info, err := visibleInfo(root, indexPath); err == nil && info.Mode().IsRegular() {
 		serveDownloadFile(w, r, root, indexPath, false)
 		return
 	}
 	if noJS {
-		s.serveNoJSDirectory(w, r, requestPath)
+		serveNoJSDirectory(w, root, requestPath)
 	} else {
 		s.serveMainIndex(w, r, requestPath)
 	}
 }
 
-var errDownloadDirectory = errors.New("is a directory")
+var (
+	errDownloadDirectory = errors.New("is a directory")
+	errHiddenPath        = fmt.Errorf("path is not public: %w", fs.ErrNotExist)
+)
 
-// downloadPath converts a virtual path to a name in the served filesystem.
-func downloadPath(virtualPath string) string {
+// rootedName converts a virtual path to a name in the served filesystem.
+func rootedName(virtualPath string) string {
 	name := strings.TrimPrefix(cleanVirtual(virtualPath), "/")
 	if name == "" {
 		return "."
@@ -949,50 +881,156 @@ func downloadPath(virtualPath string) string {
 	return name
 }
 
-func downloadInfo(files fs.FS, filePath string) (fs.FileInfo, error) {
-	info, err := fs.Stat(files, filePath)
+func visibleInfo(root *os.Root, name string) (fs.FileInfo, error) {
+	local, err := filepath.Localize(name)
 	if err != nil {
 		return nil, err
 	}
-	if matchesIgnoreRules(files, filePath, path.Base(filePath), true) {
-		return nil, fs.ErrNotExist
+	files := root.FS()
+	if matchesIgnoreRules(files, name) {
+		return nil, errHiddenPath
+	}
+	info, err := root.Stat(local)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return nil, errHiddenPath
+	}
+	for prefix := name; prefix != "."; prefix = path.Dir(prefix) {
+		entry, err := root.Lstat(filepath.FromSlash(prefix))
+		if err != nil {
+			return nil, err
+		}
+		if entry.Mode()&os.ModeSymlink != 0 {
+			if !visibleLinkTarget(root, local, info) {
+				return nil, errHiddenPath
+			}
+			break
+		}
 	}
 	return info, nil
 }
 
-func openDownloadFile(root *os.Root, filePath string) (*os.File, fs.FileInfo, error) {
-	info, err := downloadInfo(root.FS(), filePath)
+// Go 1.24 has no Root.Readlink. Resolve the target name for the ignore rules,
+// then confirm it identifies the same object using rooted metadata.
+func visibleLinkTarget(root *os.Root, local string, info fs.FileInfo) bool {
+	base, err := filepath.EvalSymlinks(root.Name())
+	if err != nil {
+		return false
+	}
+	target, err := filepath.EvalSymlinks(filepath.Join(base, local))
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(base, target)
+	if err != nil || !filepath.IsLocal(relative) {
+		return false
+	}
+	name := filepath.ToSlash(relative)
+	if matchesIgnoreRules(root.FS(), name) {
+		return false
+	}
+	targetInfo, err := root.Stat(relative)
+	return err == nil && os.SameFile(info, targetInfo)
+}
+
+func openVisibleFile(root *os.Root, filePath string) (*os.File, fs.FileInfo, error) {
+	info, err := visibleInfo(root, filePath)
 	if err != nil {
 		return nil, nil, err
 	}
 	if info.IsDir() {
 		return nil, nil, errDownloadDirectory
 	}
-	if !info.Mode().IsRegular() {
-		return nil, nil, fs.ErrNotExist
-	}
-
-	localPath, err := filepath.Localize(filePath)
+	file, err := root.Open(filepath.FromSlash(filePath))
 	if err != nil {
 		return nil, nil, err
 	}
-	file, err := root.Open(localPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	info, err = file.Stat()
-	if err == nil && !info.Mode().IsRegular() {
-		err = fs.ErrNotExist
+	opened, err := file.Stat()
+	if err == nil && (!opened.Mode().IsRegular() || !os.SameFile(info, opened)) {
+		err = errHiddenPath
 	}
 	if err != nil {
 		_ = file.Close()
 		return nil, nil, err
 	}
-	return file, info, nil
+	return file, opened, nil
+}
+
+func readVisibleFile(root *os.Root, name string) ([]byte, error) {
+	file, _, err := openVisibleFile(root, name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	return io.ReadAll(file)
+}
+
+func readVisibleDir(root *os.Root, name string) ([]fs.DirEntry, error) {
+	info, err := visibleInfo(root, name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fs.ErrInvalid
+	}
+	dir, err := root.OpenRoot(filepath.FromSlash(name))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = dir.Close() }()
+	opened, err := dir.Stat(".")
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, opened) {
+		return nil, errHiddenPath
+	}
+	return fs.ReadDir(dir.FS(), ".")
+}
+
+type visibleEntry struct {
+	name    string
+	info    fs.FileInfo
+	descend bool
+}
+
+func visibleChildren(root *os.Root, dir string) ([]visibleEntry, error) {
+	entries, err := readVisibleDir(root, dir)
+	if err != nil {
+		return nil, err
+	}
+	var children []visibleEntry
+	for _, entry := range entries {
+		name := path.Join(dir, entry.Name())
+		info, err := visibleInfo(root, name)
+		if err != nil {
+			continue
+		}
+		// List visible directory links without recursing through them.
+		children = append(children, visibleEntry{name, info, entry.IsDir() && info.IsDir()})
+	}
+	return children, nil
+}
+
+// walkVisibleDir keeps the directory's root error and skips unreadable children.
+// A false visit result prunes that entry's descendants.
+func walkVisibleDir(root *os.Root, dir string, visit func(visibleEntry) bool) error {
+	children, err := visibleChildren(root, dir)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		if visit(child) && child.descend {
+			_ = walkVisibleDir(root, child.name, visit)
+		}
+	}
+	return nil
 }
 
 func serveDownloadFile(w http.ResponseWriter, r *http.Request, root *os.Root, filePath string, attachment bool) {
-	file, info, err := openDownloadFile(root, filePath)
+	file, info, err := openVisibleFile(root, filePath)
 	if err != nil {
 		if attachment && errors.Is(err, errDownloadDirectory) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1048,14 +1086,13 @@ func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request, initialP
 }
 
 // serveNoJSDirectory serves a plain HTML directory listing for no-JS fallback
-func (s *server) serveNoJSDirectory(w http.ResponseWriter, r *http.Request, virtualPath string) {
-	realPath, err := s.realFromVirtual(virtualPath)
-	if err != nil {
-		http.NotFound(w, r)
+func serveNoJSDirectory(w http.ResponseWriter, root *os.Root, virtualPath string) {
+	dir := rootedName(virtualPath)
+	entries, err := readVisibleDir(root, dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
 		return
 	}
-
-	entries, err := os.ReadDir(realPath)
 	if err != nil {
 		http.Error(w, "Error reading directory", http.StatusInternalServerError)
 		return
@@ -1087,48 +1124,25 @@ a:visited { color: blue; }
 		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">[Parent Directory]</a><br>\n", urlEscapeVirtual(parentPath))
 	}
 
-	var dirs []os.DirEntry
-	var files []os.DirEntry
-
+	var files strings.Builder
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		realFilePath := filepath.Join(realPath, name)
-		if s.shouldIgnore(realFilePath, name) {
+		info, err := visibleInfo(root, path.Join(dir, name))
+		if err != nil {
 			continue
 		}
-
-		if entry.IsDir() {
-			dirs = append(dirs, entry)
+		href := html.EscapeString(urlEscapeVirtual(path.Join(virtualPath, name)))
+		label := template.HTMLEscapeString(name)
+		if info.IsDir() {
+			_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", href, label)
 		} else {
-			files = append(files, entry)
+			_, _ = fmt.Fprintf(&files, "<a href=\"%s\">%s</a> (%d bytes)<br>\n", href, label, info.Size())
 		}
 	}
-
-	sort.Slice(dirs, func(i, j int) bool {
-		return dirs[i].Name() < dirs[j].Name()
-	})
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Name() < files[j].Name()
-	})
-
-	for _, dir := range dirs {
-		dirPath := path.Join(virtualPath, dir.Name())
-		_, _ = fmt.Fprintf(w, "<a href=\"%s?nojs=1\">%s/</a><br>\n", html.EscapeString(urlEscapeVirtual(dirPath)), template.HTMLEscapeString(dir.Name()))
-	}
-
-	for _, file := range files {
-		filePath := path.Join(virtualPath, file.Name())
-		info, _ := file.Info()
-		var size string
-		if info != nil {
-			size = fmt.Sprintf(" (%d bytes)", info.Size())
-		}
-		_, _ = fmt.Fprintf(w, "<a href=\"%s\">%s</a>%s<br>\n", html.EscapeString(urlEscapeVirtual(filePath)), template.HTMLEscapeString(file.Name()), size)
-	}
-
+	_, _ = io.WriteString(w, files.String())
 	_, _ = fmt.Fprintf(w, "</body>\n</html>\n")
 }
 
@@ -1140,7 +1154,7 @@ func (s *server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = root.Close() }()
 
-	filePath := downloadPath(strings.TrimPrefix(r.URL.Path, "/api/static"))
+	filePath := rootedName(strings.TrimPrefix(r.URL.Path, "/api/static"))
 	serveDownloadFile(w, r, root, filePath, false)
 }
 
@@ -1200,7 +1214,7 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = root.Close() }()
-		file, info, err := openDownloadFile(root, "sitemap.xml")
+		file, info, err := openVisibleFile(root, "sitemap.xml")
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -1222,31 +1236,16 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
-
-	// Check if there's an initial path from the query parameter
-	initialPath := r.URL.Query().Get("path")
-	if initialPath != "" {
-		// Validate and set the initial path
-		newV := cleanVirtual(initialPath)
-		newReal, err := s.realFromVirtual(newV)
-		if err == nil {
-			info, err := os.Stat(newReal)
-			if err == nil && info.IsDir() {
+	var readme, docType string
+	if root, err := os.OpenRoot(s.rootAbs); err == nil {
+		defer func() { _ = root.Close() }()
+		if initialPath := r.URL.Query().Get("path"); initialPath != "" {
+			newV := cleanVirtual(initialPath)
+			if info, err := visibleInfo(root, rootedName(newV)); err == nil && info.IsDir() {
 				sess.cwd = newV
 			}
 		}
-	}
-
-	// Get readme for current directory
-	var readme string
-	var docType string
-	if sess.cwd == "/" {
-		readme, docType = readDocFile(s.rootAbs)
-	} else {
-		realCwd, err := s.realFromVirtual(sess.cwd)
-		if err == nil {
-			readme, docType = readDocFile(realCwd)
-		}
+		readme, docType = readDocFile(root, rootedName(sess.cwd))
 	}
 
 	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme, DocType: docType, CWD: sess.cwd})
@@ -1268,6 +1267,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	args := parseArgs(line)
 	cmd := args[0]
 	argv := args[1:]
+	var root *os.Root
+	switch cmd {
+	case "ls", "dir", "cd", "cat", "url", "share", "sum", "checksum", "tree", "find", "grep":
+		var err error
+		root, err = os.OpenRoot(s.rootAbs)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: cmd + ": cannot open served directory"})
+			return
+		}
+		defer func() { _ = root.Close() }()
+	}
 
 	switch cmd {
 	case "pwd":
@@ -1301,15 +1311,9 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				target = arg
 			}
 		}
-		// Get the real path of the directory to list
 		virtualPath := joinVirtual(sess.cwd, target)
-		realCwd, err := s.realFromVirtual(virtualPath)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: permission denied"})
-			return
-		}
-		// Get file info and check if it's a directory
-		info, err := os.Stat(realCwd)
+		name := rootedName(virtualPath)
+		info, err := visibleInfo(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: cannot access '" + target + "': No such file or directory"})
 			return
@@ -1326,73 +1330,34 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// It is a directory, show its contents
-		ents, err := os.ReadDir(realCwd)
+		ents, err := readVisibleDir(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "ls: error"})
 			return
 		}
-		var names []string
-		var longs []string
+		var lines []string
+		if sess.cwd != "/" {
+			parent := colorBlue + colorBold + "../" + colorReset
+			if long {
+				parent = "drwxr-xr-x          - " + parent
+			}
+			lines = append(lines, parent)
+		}
 		for _, e := range ents {
-			name := e.Name()
-			if !showHidden && strings.HasPrefix(name, ".") {
+			if !showHidden && strings.HasPrefix(e.Name(), ".") {
 				continue // hide dotfiles unless -a flag is used
 			}
-			// Check if file should be ignored based on .lsgetignore
-			realFilePath := filepath.Join(realCwd, name)
-			if s.shouldIgnore(realFilePath, name) {
-				continue
-			}
-			names = append(names, name)
-		}
-		sort.Strings(names)
-
-		// Add ".." at the beginning if not at root
-		if sess.cwd != "/" {
-			names = append([]string{".."}, names...)
-		}
-
-		if !long {
-			// Colorized simple listing
-			var coloredNames []string
-			for _, name := range names {
-				if name == ".." {
-					// Special handling for parent directory
-					coloredNames = append(coloredNames, colorBlue+colorBold+"../"+colorReset)
-					continue
-				}
-				info, err := os.Stat(filepath.Join(realCwd, name))
-				if err != nil {
-					coloredNames = append(coloredNames, name)
-					continue
-				}
-				// Use absolute virtual path for clickable links
-				// path.Join (not filepath.Join) ensures Unix-style forward slashes for virtual paths
-				displayName := path.Join(virtualPath, name)
-				coloredNames = append(coloredNames, colorizeName(info, displayName))
-			}
-			_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(coloredNames, "\n")})
-			return
-		}
-		// Colorized long listing
-		for _, name := range names {
-			if name == ".." {
-				// Special handling for parent directory in long format
-				longs = append(longs, "drwxr-xr-x          - "+colorBlue+colorBold+"../"+colorReset)
-				continue
-			}
-			info, err := os.Stat(filepath.Join(realCwd, name))
+			info, err := visibleInfo(root, path.Join(name, e.Name()))
 			if err != nil {
 				continue
 			}
-			// Use absolute virtual path for clickable links
-			// path.Join (not filepath.Join) ensures Unix-style forward slashes for virtual paths
-			displayName := path.Join(virtualPath, name)
-			// Format the long listing with colorized filename
-			longEntry := formatLong(info, colorizeName(info, displayName), humanReadable)
-			longs = append(longs, longEntry)
+			display := colorizeName(info, path.Join(virtualPath, e.Name()))
+			if long {
+				display = formatLong(info, display, humanReadable)
+			}
+			lines = append(lines, display)
 		}
-		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(longs, "\n")})
+		_ = json.NewEncoder(w).Encode(execResp{Output: strings.Join(lines, "\n")})
 		return
 
 	case "cd":
@@ -1404,12 +1369,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		newV := joinVirtual(sess.cwd, target)
-		newReal, err := s.realFromVirtual(newV)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "cd: permission denied"})
-			return
-		}
-		info, err := os.Stat(newReal)
+		name := rootedName(newV)
+		info, err := visibleInfo(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cd: no such file or directory"})
 			return
@@ -1419,16 +1380,16 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.cwd = newV
-		
+
 		// Check if directory contains index.html
-		indexPath := filepath.Join(newReal, "index.html")
-		if _, err := os.Stat(indexPath); err == nil {
+		indexPath := path.Join(name, "index.html")
+		if info, err := visibleInfo(root, indexPath); err == nil && info.Mode().IsRegular() {
 			// Directory has index.html, redirect to it
 			_ = json.NewEncoder(w).Encode(execResp{Redirect: newV})
 			return
 		}
-		
-		readme, docType := readDocFile(newReal)
+
+		readme, docType := readDocFile(root, name)
 		// Include the new CWD in the response so client can update URL
 		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme, DocType: docType})
 		return
@@ -1439,12 +1400,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		vp := joinVirtual(sess.cwd, argv[0])
-		rp, err := s.realFromVirtual(vp)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: permission denied"})
-			return
-		}
-		info, err := os.Stat(rp)
+		filePath := rootedName(vp)
+		info, err := visibleInfo(root, filePath)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: no such file or directory"})
 			return
@@ -1481,16 +1438,16 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if info.Size() > s.catMax {
-			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("cat: file too large (%d > limit %d)", info.Size(), s.catMax)})
-			return
-		}
-		f, err := os.Open(rp)
+		f, info, err := openVisibleFile(root, filePath)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: cannot open file"})
 			return
 		}
 		defer func() { _ = f.Close() }()
+		if info.Size() > s.catMax {
+			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("cat: file too large (%d > limit %d)", info.Size(), s.catMax)})
+			return
+		}
 		// read up to catMax bytes
 		var buf bytes.Buffer
 		if _, err := io.CopyN(&buf, f, s.catMax); err != nil && !errors.Is(err, io.EOF) {
@@ -1550,8 +1507,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		// Check if it's a directory
 		vp := joinVirtual(sess.cwd, pattern)
-		name := downloadPath(vp)
-		info, err := downloadInfo(root.FS(), name)
+		name := rootedName(vp)
+		info, err := visibleInfo(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "download: no such file"})
 			return
@@ -1609,13 +1566,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		realTarget, err := s.realFromVirtual(target)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: permission denied"})
-			return
-		}
-
-		info, err := os.Stat(realTarget)
+		name := rootedName(target)
+		info, err := visibleInfo(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: no such file or directory"})
 			return
@@ -1627,7 +1579,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var result strings.Builder
-		dirCount, fileCount := s.buildTree(&result, realTarget, "", showHidden, maxDepth, 0)
+		dirCount, fileCount, err := buildTree(root, &result, name, "", showHidden, maxDepth)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: cannot read directory"})
+			return
+		}
 
 		// Add summary
 		result.WriteString(fmt.Sprintf("\n%d directories, %d files", dirCount, fileCount))
@@ -1662,13 +1618,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		realSearchPath, err := s.realFromVirtual(searchPath)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "find: permission denied"})
-			return
-		}
-
-		info, err := os.Stat(realSearchPath)
+		name := rootedName(searchPath)
+		info, err := visibleInfo(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "find: no such file or directory"})
 			return
@@ -1679,10 +1630,9 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var results []string
-		err = s.findFiles(realSearchPath, searchPath, namePattern, typeFilter, &results)
+		results, err := findFiles(root, name, namePattern, typeFilter)
 		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("find: %v", err)})
+			_ = json.NewEncoder(w).Encode(execResp{Output: "find: cannot read directory"})
 			return
 		}
 
@@ -1701,13 +1651,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		vp := joinVirtual(sess.cwd, argv[0])
-		rp, err := s.realFromVirtual(vp)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "url: permission denied"})
-			return
-		}
-
-		info, err := os.Stat(rp)
+		info, err := visibleInfo(root, rootedName(vp))
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: no such file or directory"})
 			return
@@ -1718,18 +1662,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Check if file should be ignored
-		if s.shouldIgnore(rp, filepath.Base(rp)) {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "url: file is ignored"})
-			return
-		}
-
 		// Build the full URL for the file
 		var fileURL string
+		escapedPath := urlEscapeVirtual(vp)
 		if s.baseURL != "" {
 			// Use configured base URL (clean, no /api/static)
 			// Required when behind reverse proxy with different public URL
-			fileURL = s.baseURL + vp
+			fileURL = s.baseURL + escapedPath
 		} else {
 			// Auto-detect from request (works for most cases)
 			// Uses Host header and X-Forwarded-Proto for protocol detection
@@ -1741,7 +1680,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 				protocol = "https"
 			}
-			fileURL = fmt.Sprintf("%s://%s/%s", protocol, host, vp)
+			fileURL = fmt.Sprintf("%s://%s%s", protocol, host, escapedPath)
 		}
 
 		// Log the share command
@@ -1809,13 +1748,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		var results []string
 		for _, file := range files {
 			vp := joinVirtual(sess.cwd, file)
-			rp, err := s.realFromVirtual(vp)
-			if err != nil {
-				results = append(results, fmt.Sprintf("grep: %s: permission denied", file))
-				continue
-			}
-
-			info, err := os.Stat(rp)
+			name := rootedName(vp)
+			info, err := visibleInfo(root, name)
 			if err != nil {
 				results = append(results, fmt.Sprintf("grep: %s: no such file or directory", file))
 				continue
@@ -1823,15 +1757,15 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 			if info.IsDir() {
 				if recursive {
-					err := s.grepInDirectory(rp, vp, pattern, ignoreCase, showLineNumbers, &results)
+					err := grepInDirectory(root, name, pattern, ignoreCase, showLineNumbers, &results)
 					if err != nil {
-						results = append(results, fmt.Sprintf("grep: %s: %v", file, err))
+						results = append(results, fmt.Sprintf("grep: %s: cannot read directory", file))
 					}
 				} else {
 					results = append(results, fmt.Sprintf("grep: %s: is a directory", file))
 				}
 			} else {
-				err := s.grepInFile(rp, vp, pattern, ignoreCase, showLineNumbers, len(files) > 1, &results)
+				err := grepInFile(root, name, pattern, ignoreCase, showLineNumbers, len(files) > 1, &results)
 				if err != nil {
 					results = append(results, fmt.Sprintf("grep: %s: %v", file, err))
 				}
@@ -1853,27 +1787,17 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 
 		vp := joinVirtual(sess.cwd, argv[0])
-		rp, err := s.realFromVirtual(vp)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: permission denied"})
-			return
-		}
-
-		info, err := os.Stat(rp)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: no such file or directory"})
-			return
-		}
-
-		if info.IsDir() {
+		f, _, err := openVisibleFile(root, rootedName(vp))
+		if errors.Is(err, errDownloadDirectory) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: is a directory"})
 			return
 		}
-
-		// Open file and compute hashes
-		f, err := os.Open(rp)
 		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: cannot open file"})
+			message := "sum: cannot open file"
+			if errors.Is(err, fs.ErrNotExist) {
+				message = "sum: no such file or directory"
+			}
+			_ = json.NewEncoder(w).Encode(execResp{Output: message})
 			return
 		}
 		defer func() { _ = f.Close() }()
@@ -1902,87 +1826,34 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("sh: %s: command not found", cmd)})
 }
 
-// findFiles recursively searches for files and directories matching the given pattern
-func (s *server) findFiles(realPath, virtualPath, pattern, typeFilter string, results *[]string) error {
-	entries, err := os.ReadDir(realPath)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		name := entry.Name()
-
-		// Skip hidden files unless pattern starts with dot
-		if strings.HasPrefix(name, ".") && !strings.HasPrefix(pattern, ".") {
-			continue
+// findFiles recursively searches for files and directories matching the given pattern.
+func findFiles(root *os.Root, dir, pattern, typeFilter string) ([]string, error) {
+	var results []string
+	showHidden := strings.HasPrefix(pattern, ".")
+	err := walkVisibleDir(root, dir, func(entry visibleEntry) bool {
+		name := path.Base(entry.name)
+		if !showHidden && strings.HasPrefix(name, ".") {
+			return false
 		}
-
-		realEntryPath := filepath.Join(realPath, name)
-		virtualEntryPath := path.Join(virtualPath, name)
-
-		// Check if file should be ignored based on .lsgetignore
-		if s.shouldIgnore(realEntryPath, name) {
-			continue
-		}
-
-		// Check if name matches pattern
 		matched, err := filepath.Match(pattern, name)
 		if err != nil {
-			continue // Invalid pattern, skip this entry
+			return false
 		}
-
-		isDir := entry.IsDir()
-
-		// Apply type filter and add to results if matched
-		if matched {
-			includeEntry := false
-			switch typeFilter {
-			case "f":
-				includeEntry = !isDir
-			case "d":
-				includeEntry = isDir
-			default:
-				includeEntry = true
-			}
-
-			if includeEntry {
-				// Get file info for colorization
-				info, err := entry.Info()
-				if err == nil {
-					colorizedName := colorizeName(info, virtualEntryPath)
-					*results = append(*results, colorizedName)
-				} else {
-					*results = append(*results, virtualEntryPath)
-				}
-			}
+		if matched && (typeFilter == "" || (typeFilter == "d") == entry.descend) {
+			results = append(results, colorizeName(entry.info, cleanVirtual(entry.name)))
 		}
-
-		// Recursively search subdirectories
-		if isDir {
-			err := s.findFiles(realEntryPath, virtualEntryPath, pattern, typeFilter, results)
-			if err != nil {
-				// Continue searching other directories even if one fails
-				continue
-			}
-		}
-	}
-
-	return nil
+		return true
+	})
+	return results, err
 }
 
 // grepInFile searches for a pattern within a single file
-func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, showLineNumbers, showFilename bool, results *[]string) error {
-	file, err := os.Open(realPath)
+func grepInFile(root *os.Root, name, pattern string, ignoreCase, showLineNumbers, showFilename bool, results *[]string) error {
+	file, info, err := openVisibleFile(root, name)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = file.Close() }()
-
-	// Check if file is likely to be text
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
 
 	// Skip very large files to avoid memory issues
 	if info.Size() > 10*1024*1024 { // 10MB limit
@@ -2022,7 +1893,7 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 			// Add filename if multiple files or recursive search
 			if showFilename {
 				result.WriteString(colorCyan)
-				result.WriteString(virtualPath)
+				result.WriteString(cleanVirtual(name))
 				result.WriteString(colorReset)
 				result.WriteString(":")
 			}
@@ -2064,47 +1935,17 @@ func (s *server) grepInFile(realPath, virtualPath, pattern string, ignoreCase, s
 	return scanner.Err()
 }
 
-// grepInDirectory recursively searches for a pattern in all text files within a directory
-func (s *server) grepInDirectory(realPath, virtualPath, pattern string, ignoreCase, showLineNumbers bool, results *[]string) error {
-	entries, err := os.ReadDir(realPath)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		name := entry.Name()
-
-		// Skip hidden files and directories
-		if strings.HasPrefix(name, ".") {
-			continue
+// grepInDirectory recursively searches visible, non-dot files.
+func grepInDirectory(root *os.Root, dir, pattern string, ignoreCase, showLineNumbers bool, results *[]string) error {
+	return walkVisibleDir(root, dir, func(entry visibleEntry) bool {
+		if strings.HasPrefix(path.Base(entry.name), ".") {
+			return false
 		}
-
-		realEntryPath := filepath.Join(realPath, name)
-		virtualEntryPath := path.Join(virtualPath, name)
-
-		// Check if file should be ignored based on .lsgetignore
-		if s.shouldIgnore(realEntryPath, name) {
-			continue
+		if entry.info.Mode().IsRegular() {
+			_ = grepInFile(root, entry.name, pattern, ignoreCase, showLineNumbers, true, results)
 		}
-
-		if entry.IsDir() {
-			// Recursively search subdirectories
-			err := s.grepInDirectory(realEntryPath, virtualEntryPath, pattern, ignoreCase, showLineNumbers, results)
-			if err != nil {
-				// Continue searching other directories even if one fails
-				continue
-			}
-		} else {
-			// Search in file
-			err := s.grepInFile(realEntryPath, virtualEntryPath, pattern, ignoreCase, showLineNumbers, true, results)
-			if err != nil {
-				// Continue searching other files even if one fails
-				continue
-			}
-		}
-	}
-
-	return nil
+		return true
+	})
 }
 
 type fileInfo struct {
@@ -2114,27 +1955,20 @@ type fileInfo struct {
 
 // collectFilesForDownload collects files matching a name or pattern for download.
 func collectFilesForDownload(root *os.Root, cwd, pattern string) ([]fileInfo, error) {
-	name := downloadPath(joinVirtual(cwd, pattern))
-	files := root.FS()
+	name := rootedName(joinVirtual(cwd, pattern))
 	if !strings.ContainsAny(pattern, "*?[") {
-		info, err := downloadInfo(files, name)
+		info, err := visibleInfo(root, name)
 		if err != nil {
 			return nil, err
 		}
 		if info.IsDir() {
 			return collectFilesFromDirectory(root, name)
 		}
-		if !info.Mode().IsRegular() {
-			return nil, fs.ErrNotExist
-		}
 		return []fileInfo{{virtualPath: "/" + name, relativePath: path.Base(name)}}, nil
 	}
 
-	dir := downloadPath(joinVirtual(cwd, path.Dir(pattern)))
-	if _, err := downloadInfo(files, dir); err != nil {
-		return nil, err
-	}
-	entries, err := fs.ReadDir(files, dir)
+	dir := rootedName(joinVirtual(cwd, path.Dir(pattern)))
+	entries, err := readVisibleDir(root, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -2146,7 +1980,7 @@ func collectFilesForDownload(root *os.Root, cwd, pattern string) ([]fileInfo, er
 			continue
 		}
 		name := path.Join(dir, entry.Name())
-		info, err := downloadInfo(files, name)
+		info, err := visibleInfo(root, name)
 		if err == nil && info.Mode().IsRegular() {
 			matches = append(matches, fileInfo{virtualPath: "/" + name, relativePath: entry.Name()})
 		}
@@ -2168,34 +2002,20 @@ func downloadDirectoryName(root *os.Root, dir string) string {
 // collectFilesFromDirectory walks the served filesystem and keeps ZIP entry names relative.
 func collectFilesFromDirectory(root *os.Root, dir string) ([]fileInfo, error) {
 	var matches []fileInfo
-	files := root.FS()
 	dirName := downloadDirectoryName(root, dir)
-	err := fs.WalkDir(files, dir, func(name string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			if name == dir {
-				return err
-			}
-			return nil
+	err := walkVisibleDir(root, dir, func(entry visibleEntry) bool {
+		if !entry.info.Mode().IsRegular() || strings.HasPrefix(path.Base(entry.name), ".") {
+			return true
 		}
-		info, err := downloadInfo(files, name)
-		if entry.IsDir() {
-			if err != nil {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if err != nil || !info.Mode().IsRegular() || strings.HasPrefix(entry.Name(), ".") {
-			return nil
-		}
-		relativePath := name
+		relativePath := entry.name
 		if dir != "." {
-			relativePath = strings.TrimPrefix(name, dir+"/")
+			relativePath = strings.TrimPrefix(entry.name, dir+"/")
 		}
 		matches = append(matches, fileInfo{
-			virtualPath:  "/" + name,
+			virtualPath:  "/" + entry.name,
 			relativePath: path.Join(dirName, relativePath),
 		})
-		return nil
+		return true
 	})
 	return matches, err
 }
@@ -2208,7 +2028,7 @@ func sendZipArchive(w http.ResponseWriter, root *os.Root, files []fileInfo, file
 	defer func() { _ = zipWriter.Close() }()
 
 	for _, file := range files {
-		source, info, err := openDownloadFile(root, downloadPath(file.virtualPath))
+		source, info, err := openVisibleFile(root, rootedName(file.virtualPath))
 		if err != nil {
 			continue
 		}
@@ -2228,73 +2048,48 @@ func sendZipArchive(w http.ResponseWriter, root *os.Root, files []fileInfo, file
 	}
 }
 
-// buildTree recursively builds a tree representation of the directory structure
-func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, showHidden bool, maxDepth, currentDepth int) (int, int) {
-	if maxDepth >= 0 && currentDepth >= maxDepth {
-		return 0, 0
+// buildTree renders the visible children of a directory and their descendants.
+func buildTree(root *os.Root, result *strings.Builder, dir, prefix string, showHidden bool, maxDepth int) (int, int, error) {
+	if maxDepth == 0 {
+		return 0, 0, nil
 	}
-
-	entries, err := os.ReadDir(dirPath)
+	entries, err := visibleChildren(root, dir)
 	if err != nil {
-		return 0, 0
+		return 0, 0, err
 	}
 
-	// Filter and sort entries
-	var validEntries []os.DirEntry
-	for _, entry := range entries {
-		name := entry.Name()
-		if !showHidden && strings.HasPrefix(name, ".") {
-			continue
+	if !showHidden {
+		shown := entries[:0]
+		for _, entry := range entries {
+			if !strings.HasPrefix(path.Base(entry.name), ".") {
+				shown = append(shown, entry)
+			}
 		}
-		validEntries = append(validEntries, entry)
+		entries = shown
 	}
-
-	// Sort: directories first, then files, alphabetically within each group
-	sort.Slice(validEntries, func(i, j int) bool {
-		iDir := validEntries[i].IsDir()
-		jDir := validEntries[j].IsDir()
-		if iDir != jDir {
-			return iDir && !jDir
-		}
-		return validEntries[i].Name() < validEntries[j].Name()
+	// Keep each group alphabetical and show directories before files.
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].descend && !entries[j].descend
 	})
+	if maxDepth > 0 {
+		maxDepth--
+	}
 
 	dirCount := 0
 	fileCount := 0
 
-	for i, entry := range validEntries {
-		name := entry.Name()
-		isLast := i == len(validEntries)-1
-
-		// Build the tree symbols
-		var connector string
-		if isLast {
+	for i, entry := range entries {
+		connector := "├── "
+		childPrefix := prefix + "│   "
+		if i == len(entries)-1 {
 			connector = "└── "
-		} else {
-			connector = "├── "
+			childPrefix = prefix + "    "
 		}
+		result.WriteString(prefix + connector + colorizeName(entry.info, path.Base(entry.name)) + "\n")
 
-		// Get file info for colorization
-		fullPath := filepath.Join(dirPath, name)
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		// Add colorized name
-		coloredName := colorizeName(info, name)
-		result.WriteString(prefix + connector + coloredName + "\n")
-
-		if entry.IsDir() {
+		if entry.descend {
 			dirCount++
-			// Recursively process subdirectories
-			var newPrefix string
-			if isLast {
-				newPrefix = prefix + "    "
-			} else {
-				newPrefix = prefix + "│   "
-			}
-			subDirCount, subFileCount := s.buildTree(result, fullPath, newPrefix, showHidden, maxDepth, currentDepth+1)
+			subDirCount, subFileCount, _ := buildTree(root, result, entry.name, childPrefix, showHidden, maxDepth)
 			dirCount += subDirCount
 			fileCount += subFileCount
 		} else {
@@ -2302,7 +2097,7 @@ func (s *server) buildTree(result *strings.Builder, dirPath, prefix string, show
 		}
 	}
 
-	return dirCount, fileCount
+	return dirCount, fileCount, nil
 }
 
 func urlEscapeVirtual(v string) string {
@@ -2325,13 +2120,13 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = root.Close() }()
 
 	if filePath := query.Get("path"); filePath != "" {
-		serveDownloadFile(w, r, root, downloadPath(filePath), true)
+		serveDownloadFile(w, r, root, rootedName(filePath), true)
 		return
 	}
 
 	if dir := query.Get("dir"); dir != "" {
-		name := downloadPath(dir)
-		info, err := downloadInfo(root.FS(), name)
+		name := rootedName(dir)
+		info, err := visibleInfo(root, name)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -2379,9 +2174,6 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	arg := req.Path
-	if arg == "" {
-		arg = ""
-	}
 	// Split into dir part + base (prefix)
 	slash := strings.LastIndex(arg, "/")
 	dirPart := ""
@@ -2398,13 +2190,15 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	} else {
 		baseV = joinVirtual(sess.cwd, dirPart)
 	}
-	baseR, err := s.realFromVirtual(baseV)
+	root, err := os.OpenRoot(s.rootAbs)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(completeResp{Items: nil})
 		return
 	}
 
-	ents, err := os.ReadDir(baseR)
+	defer func() { _ = root.Close() }()
+	base := rootedName(baseV)
+	ents, err := readVisibleDir(root, base)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(completeResp{Items: nil})
 		return
@@ -2423,32 +2217,21 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		isDir := e.IsDir()
+		info, err := visibleInfo(root, path.Join(base, name))
+		if err != nil {
+			continue
+		}
+		isDir := info.IsDir()
 		if req.DirsOnly && !isDir {
 			continue
 		}
 
-		if req.TextOnly || req.MaxSize > 0 {
-			if !isDir {
-				info, err := e.Info()
-				if err != nil {
-					continue
-				}
-				// Use file category to check if viewable
-				cat := getFileCategory(name)
-				
-				// Images are always included regardless of size limits
-				if cat == FileCategoryImage {
-					// Skip other filters for images
-				} else {
-					// For non-images, apply the filters
-					if req.MaxSize > 0 && info.Size() > req.MaxSize {
-						continue
-					}
-					if req.TextOnly && cat != FileCategoryText {
-						continue
-					}
-				}
+		if !isDir && (req.TextOnly || req.MaxSize > 0) {
+			category := getFileCategory(name)
+			// Images remain eligible for inline cat regardless of size.
+			if category != FileCategoryImage && (req.MaxSize > 0 && info.Size() > req.MaxSize ||
+				req.TextOnly && category != FileCategoryText) {
+				continue
 			}
 		}
 

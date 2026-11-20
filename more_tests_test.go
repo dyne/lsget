@@ -69,7 +69,7 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("T"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	body, typ := readDocFile(dir)
+	body, typ := readDocFile(openTestDownloadRoot(t, dir), ".")
 	if body != "T" || typ != "text" {
 		t.Fatalf("readme.txt: %q %q", body, typ)
 	}
@@ -78,7 +78,7 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir2, "guide.rst"), []byte("R"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b2, t2 := readDocFile(dir2)
+	b2, t2 := readDocFile(openTestDownloadRoot(t, dir2), ".")
 	if b2 != "R" || t2 != "rst" {
 		t.Fatalf("rst fallback: %q %q", b2, t2)
 	}
@@ -87,7 +87,7 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir3, "file.nfo"), []byte("NFO"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b3, t3 := readDocFile(dir3)
+	b3, t3 := readDocFile(openTestDownloadRoot(t, dir3), ".")
 	if b3 != "NFO" || t3 != "nfo" {
 		t.Fatalf("nfo: %q %q", b3, t3)
 	}
@@ -95,8 +95,9 @@ func TestReadDocFile_Variants(t *testing.T) {
 
 // ---- ignore logic ----
 
-func TestParseIgnoreAndShouldIgnore(t *testing.T) {
+func TestVisibleInfoNestedRules(t *testing.T) {
 	s := newTestServer(t)
+	root := openTestDownloadRoot(t, s.rootAbs)
 	// layout: /a/.lsgetignore ("*.log"), /a/b/.lsgetignore ("secret/*")
 	a := filepath.Join(s.rootAbs, "a")
 	b := filepath.Join(a, "b")
@@ -112,8 +113,8 @@ func TestParseIgnoreAndShouldIgnore(t *testing.T) {
 
 	f1 := filepath.Join(a, "x.log")
 	_ = os.WriteFile(f1, []byte("x"), 0o644)
-	if !s.shouldIgnore(f1, filepath.Base(f1)) {
-		t.Fatal("*.log should be ignored")
+	if _, err := visibleInfo(root, "a/x.log"); !errors.Is(err, errHiddenPath) {
+		t.Fatalf("*.log should be ignored, got %v", err)
 	}
 
 	sec := filepath.Join(b, "secret", "top.txt")
@@ -121,15 +122,15 @@ func TestParseIgnoreAndShouldIgnore(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = os.WriteFile(sec, []byte("t"), 0o644)
-	if !s.shouldIgnore(sec, filepath.Base(sec)) {
-		t.Fatal("path pattern ignored in child")
+	if _, err := visibleInfo(root, "a/b/secret/top.txt"); !errors.Is(err, errHiddenPath) {
+		t.Fatalf("path pattern should apply to child, got %v", err)
 	}
 
 	// non-match
 	keep := filepath.Join(a, "keep.txt")
 	_ = os.WriteFile(keep, []byte("k"), 0o644)
-	if s.shouldIgnore(keep, filepath.Base(keep)) {
-		t.Fatal("keep should not be ignored")
+	if _, err := visibleInfo(root, "a/keep.txt"); err != nil {
+		t.Fatalf("keep should be visible, got %v", err)
 	}
 }
 
@@ -273,7 +274,10 @@ func TestBuildTree_HiddenAndDepth(t *testing.T) {
 	}
 
 	var b strings.Builder
-	dirs, files := s.buildTree(&b, s.rootAbs, "", true, 1, 0)
+	dirs, files, err := buildTree(openTestDownloadRoot(t, s.rootAbs), &b, ".", "", true, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	out := b.String()
 	if !strings.Contains(out, ".hidden") {
 		t.Fatalf("should include hidden: %q", out)
