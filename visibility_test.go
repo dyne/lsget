@@ -250,7 +250,9 @@ func TestReadVisibilityMatrix(t *testing.T) {
 	})
 
 	t.Run("non-regular entries", func(t *testing.T) {
-		listener, err := net.Listen("unix", filepath.Join(s.rootAbs, "socket"))
+		// AF_UNIX limits the bind name independently of the fixture directory.
+		t.Chdir(s.rootAbs)
+		listener, err := net.Listen("unix", "socket")
 		if err != nil {
 			t.Skipf("Unix socket fixture unavailable: %v", err)
 		}
