@@ -59,6 +59,51 @@ func TestHandleConfig_ReadmeAndPath(t *testing.T) {
 	}
 }
 
+func TestReadmePreviewLimit(t *testing.T) {
+	s := newTestServer(t)
+	tests := []struct {
+		name string
+		size int
+	}{
+		{"below", readmePreviewLimit - 1},
+		{"exact", readmePreviewLimit},
+		{"above", readmePreviewLimit + 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(s.rootAbs, tt.name)
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			content := strings.Repeat("x", tt.size-1) + "!"
+			if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			expected := content[:min(tt.size, readmePreviewLimit)]
+			wantTruncated := tt.size > readmePreviewLimit
+			check := func(route string, readme *string, docType string, truncated bool) {
+				t.Helper()
+				if readme == nil {
+					t.Fatalf("%s: missing README", route)
+				}
+				if *readme != expected || docType != "text" || truncated != wantTruncated {
+					t.Errorf("%s: unexpected README content, length %d, type %q, truncated %t", route, len(*readme), docType, truncated)
+				}
+			}
+
+			response := httptest.NewRecorder()
+			s.handleConfig(response, httptest.NewRequest("GET", "/api/config?path=/"+tt.name, nil))
+			var config configResp
+			if err := json.NewDecoder(response.Result().Body).Decode(&config); err != nil {
+				t.Fatal(err)
+			}
+			check("config", config.Readme, config.DocType, config.ReadmeTruncated)
+			exec := execJSON(t, s, "cd /"+tt.name)
+			check("cd", exec.Readme, exec.DocType, exec.ReadmeTruncated)
+		})
+	}
+}
+
 func execJSON(t *testing.T, s *server, input string) execResp {
 	t.Helper()
 	body, _ := json.Marshal(execReq{Input: input})
@@ -426,6 +471,80 @@ func TestHandleComplete_Basic(t *testing.T) {
 	}
 }
 
+func TestEmbeddedShellPolicy(t *testing.T) {
+	s := newTestServer(t)
+	serve := func(uri string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		s.handleIndex(recorder, httptest.NewRequest(http.MethodGet, uri, nil))
+		return recorder
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, value := range []string{"first working directory", "second working directory"} {
+		t.Chdir(t.TempDir())
+		write("index.html", value)
+		response := serve("/")
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "<title>📂 lsget</title>") ||
+			strings.Contains(response.Body.String(), value) {
+			t.Fatalf("request from %q did not serve the embedded shell, status %d", value, response.Code)
+		}
+	}
+
+	const enforced = "Content-Security-Policy"
+	const reportOnly = "Content-Security-Policy-Report-Only"
+	first := serve("/")
+	second := serve("/")
+	policy := first.Header().Get(enforced)
+	before, rest, found := strings.Cut(policy, "'nonce-")
+	nonce, _, closed := strings.Cut(rest, "'")
+	if !found || !closed || nonce == "" || before != "default-src 'none'; script-src " ||
+		strings.Count(first.Body.String(), `nonce="`+nonce+`"`) != 4 {
+		t.Fatal("embedded script and style nonces did not match the policy")
+	}
+	if first.Header().Get(reportOnly) != "" || first.Header().Get("Cache-Control") != "no-store" ||
+		!strings.Contains(policy, " 'unsafe-eval'") || strings.Contains(policy, "'unsafe-inline'") ||
+		strings.Contains(second.Header().Get(enforced), nonce) {
+		t.Fatalf("unexpected enforcement or nonce reuse: %s", policy)
+	}
+
+	s.shellCSPReportOnly = true
+	trial := serve("/")
+	trialPolicy := trial.Header().Get(reportOnly)
+	if trial.Header().Get(enforced) != "" || !strings.Contains(trialPolicy, "default-src 'none'; script-src 'nonce-") ||
+		strings.Contains(trialPolicy, "'unsafe-eval'") {
+		t.Fatalf("unexpected report-only policy: %s", trialPolicy)
+	}
+	if fallback := serve("/?nojs=1"); fallback.Code != http.StatusOK ||
+		!strings.Contains(fallback.Body.String(), "<h1>Index of /</h1>") ||
+		fallback.Header().Get(enforced) != "" || fallback.Header().Get(reportOnly) != "" {
+		t.Fatalf("unexpected no-JS response: status %d, headers %v", fallback.Code, fallback.Header())
+	}
+
+	s.devTemplate = "index.html"
+	dev := serve("/")
+	if dev.Code != http.StatusOK || dev.Body.String() != "second working directory" ||
+		dev.Header().Get(enforced) != "" || dev.Header().Get(reportOnly) != "" {
+		t.Fatalf("unexpected development response: status %d, headers %v", dev.Code, dev.Header())
+	}
+	if err := os.Mkdir(filepath.Join(s.rootAbs, "site"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(s.rootAbs, "site", "index.html"), "<h1>Published site</h1>")
+	published := serve("/site/?nojs=1")
+	if published.Code != http.StatusOK || published.Body.String() != "<h1>Published site</h1>" ||
+		published.Header().Get(enforced) != "" || published.Header().Get(reportOnly) != "" {
+		t.Fatalf("unexpected published response: status %d, headers %v", published.Code, published.Header())
+	}
+	s.devTemplate = "missing.html"
+	if missing := serve("/"); missing.Code != http.StatusInternalServerError {
+		t.Fatalf("missing development template: status %d", missing.Code)
+	}
+}
+
 func TestHandleIndex_InvalidPathDoesNotReflectIntoHTML(t *testing.T) {
 	s := newTestServer(t)
 
@@ -560,12 +679,12 @@ func TestNoJSHTMLEscaping(t *testing.T) {
 		isDir    bool
 		expected string // what should NOT appear in the output (unescaped)
 	}{
-		{`test"file.txt`, false, `href="/test"file.txt"`},      // quote should be escaped
-		{`test'file.txt`, false, `href="/test'file.txt"`},      // apostrophe should be escaped
-		{`test<file.txt`, false, `href="/test<file.txt"`},      // angle bracket should be escaped
-		{`test>file.txt`, false, `href="/test>file.txt"`},      // angle bracket should be escaped
-		{`test&file.txt`, false, `href="/test&file.txt"`},      // ampersand should be escaped (but URL-escaped)
-		{`test"dir`, true, `href="/test"dir?nojs=1"`},          // quote in directory name
+		{`test"file.txt`, false, `href="/test"file.txt"`}, // quote should be escaped
+		{`test'file.txt`, false, `href="/test'file.txt"`}, // apostrophe should be escaped
+		{`test<file.txt`, false, `href="/test<file.txt"`}, // angle bracket should be escaped
+		{`test>file.txt`, false, `href="/test>file.txt"`}, // angle bracket should be escaped
+		{`test&file.txt`, false, `href="/test&file.txt"`}, // ampersand should be escaped (but URL-escaped)
+		{`test"dir`, true, `href="/test"dir?nojs=1"`},     // quote in directory name
 	}
 
 	for _, tc := range testCases {

@@ -10,6 +10,8 @@ tasks:
   dev:
     desc: "Start live‑reloading dev server (rebuild on change to main.go)"
     deps: [tidy]
+    env:
+      LSGET_DEV_TEMPLATE: "{{.TASKFILE_DIR}}/index.html"
     cmds:
       - go tool air # Air will watch *.go by default, thus including main.go
     interactive: true

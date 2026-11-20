@@ -69,8 +69,8 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("T"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	body, typ := readDocFile(openTestDownloadRoot(t, dir), ".")
-	if body != "T" || typ != "text" {
+	body, typ, truncated := readDocFile(openTestDownloadRoot(t, dir), ".")
+	if body != "T" || typ != "text" || truncated {
 		t.Fatalf("readme.txt: %q %q", body, typ)
 	}
 	// Second dir: extension scan fallback
@@ -78,8 +78,8 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir2, "guide.rst"), []byte("R"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b2, t2 := readDocFile(openTestDownloadRoot(t, dir2), ".")
-	if b2 != "R" || t2 != "rst" {
+	b2, t2, truncated := readDocFile(openTestDownloadRoot(t, dir2), ".")
+	if b2 != "R" || t2 != "rst" || truncated {
 		t.Fatalf("rst fallback: %q %q", b2, t2)
 	}
 	// nfo
@@ -87,8 +87,8 @@ func TestReadDocFile_Variants(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir3, "file.nfo"), []byte("NFO"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b3, t3 := readDocFile(openTestDownloadRoot(t, dir3), ".")
-	if b3 != "NFO" || t3 != "nfo" {
+	b3, t3, truncated := readDocFile(openTestDownloadRoot(t, dir3), ".")
+	if b3 != "NFO" || t3 != "nfo" || truncated {
 		t.Fatalf("nfo: %q %q", b3, t3)
 	}
 }

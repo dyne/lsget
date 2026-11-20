@@ -70,25 +70,25 @@ const (
 	colorBold = "\033[1m"
 )
 
-const helpTpl = `Welcome to <span class="ps1">lsget</span> <span style="color: #666;">v{{.Version}}</span>!
-<span style="color: #888;">Type one of the commands below to get started.</span>
+const helpTpl = `Welcome to <span class="ps1">lsget</span> <span class="help-version">v{{.Version}}</span>!
+<span class="help-note">Type one of the commands below to get started.</span>
 <br/>
 
-<span style="color: #aaa;">Available commands:</span>
-• <strong>help</strong> - <span style="color: #bbb;">print this message again</span>
-• <strong>pwd</strong> - <span style="color: #bbb;">print working directory</span>
-• <strong>ls</strong> <span style="color: #888;">[-l] [-h]</span>|<strong>dir</strong> <span style="color: #888;">[-l] [-h]</span> - <span style="color: #bbb;">list files (-h for human readable sizes)</span>
-• <strong>cd</strong> <span style="color: #888;">DIR</span> - <span style="color: #bbb;">change directory</span>
-• <strong>cat</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">view a text file</span>
-• <strong>sum</strong>|<strong>checksum</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">print MD5 and SHA256 checksums</span>
-• <strong>get</strong>|<strong>wget</strong>|<strong>download</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">download a file</span>
-• <strong>url</strong>|<strong>share</strong> <span style="color: #888;">FILE</span> - <span style="color: #bbb;">get shareable URL (copies to clipboard)</span>
-• <strong>tree</strong> <span style="color: #888;">[-L&lt;DEPTH&gt;] [-a]</span> - <span style="color: #bbb;">directory structure</span>
-• <strong>find</strong> <span style="color: #888;">[PATH] [-name PATTERN] [-type f|d]</span> - <span style="color: #bbb;">search for files and directories</span>
-• <strong>grep</strong> <span style="color: #888;">[-r] [-i] [-n] PATTERN [FILE...]</span> - <span style="color: #bbb;">search for text patterns in files</span>
+<span class="help-heading">Available commands:</span>
+• <strong>help</strong> - <span class="help-description">print this message again</span>
+• <strong>pwd</strong> - <span class="help-description">print working directory</span>
+• <strong>ls</strong> <span class="help-note">[-l] [-h]</span>|<strong>dir</strong> <span class="help-note">[-l] [-h]</span> - <span class="help-description">list files (-h for human readable sizes)</span>
+• <strong>cd</strong> <span class="help-note">DIR</span> - <span class="help-description">change directory</span>
+• <strong>cat</strong> <span class="help-note">FILE</span> - <span class="help-description">view a text file</span>
+• <strong>sum</strong>|<strong>checksum</strong> <span class="help-note">FILE</span> - <span class="help-description">print MD5 and SHA256 checksums</span>
+• <strong>get</strong>|<strong>wget</strong>|<strong>download</strong> <span class="help-note">FILE</span> - <span class="help-description">download a file</span>
+• <strong>url</strong>|<strong>share</strong> <span class="help-note">FILE</span> - <span class="help-description">get shareable URL (copies to clipboard)</span>
+• <strong>tree</strong> <span class="help-note">[-L&lt;DEPTH&gt;] [-a]</span> - <span class="help-description">directory structure</span>
+• <strong>find</strong> <span class="help-note">[PATH] [-name PATTERN] [-type f|d]</span> - <span class="help-description">search for files and directories</span>
+• <strong>grep</strong> <span class="help-note">[-r] [-i] [-n] PATTERN [FILE...]</span> - <span class="help-description">search for text patterns in files</span>
 
 <br/><br/>
-<span style="color: #aaa;">Hint: to autocomplete filenames and dir use</span> <kbd class="ps1">Tab</kbd>
+<span class="help-heading">Hint: to autocomplete filenames and dir use</span> <kbd class="ps1">Tab</kbd>
 `
 
 func renderHelp() string {
@@ -235,12 +235,30 @@ func getFileCategory(filename string) FileCategory {
 	}
 }
 
-// readDocFile returns the raw contents of documentation files if present in dir.
-// Supports README.md, .txt, .nfo, and .rst files in priority order.
-func readDocFile(root *os.Root, dir string) (string, string) {
+const readmePreviewLimit = 256 * 1024
+
+func readDocPreview(root *os.Root, name string) (string, bool, error) {
+	file, _, err := openVisibleFile(root, name)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = file.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(file, readmePreviewLimit+1))
+	if err != nil {
+		return "", false, err
+	}
+	if len(body) <= readmePreviewLimit {
+		return string(body), false, nil
+	}
+	return string(body[:readmePreviewLimit]), true, nil
+}
+
+// readDocFile selects the most relevant visible document and previews its contents.
+func readDocFile(root *os.Root, dir string) (string, string, bool) {
 	ents, err := readVisibleDir(root, dir)
 	if err != nil {
-		return "", ""
+		return "", "", false
 	}
 
 	// Priority order for documentation files
@@ -258,11 +276,11 @@ func readDocFile(root *os.Root, dir string) (string, string) {
 	for _, docFile := range docFiles {
 		for _, e := range ents {
 			if strings.EqualFold(e.Name(), docFile.pattern) {
-				b, err := readVisibleFile(root, path.Join(dir, e.Name()))
+				body, truncated, err := readDocPreview(root, path.Join(dir, e.Name()))
 				if err != nil {
 					continue
 				}
-				return string(b), docFile.fileType
+				return body, docFile.fileType, truncated
 			}
 		}
 	}
@@ -272,19 +290,19 @@ func readDocFile(root *os.Root, dir string) (string, string) {
 		ext := path.Ext(strings.ToLower(e.Name()))
 		for _, docFile := range docFiles {
 			if ext == path.Ext(docFile.pattern) {
-				b, err := readVisibleFile(root, path.Join(dir, e.Name()))
+				body, truncated, err := readDocPreview(root, path.Join(dir, e.Name()))
 				if err == nil {
-					return string(b), docFile.fileType
+					return body, docFile.fileType, truncated
 				}
 				break
 			}
 		}
 	}
 
-	return "", ""
+	return "", "", false
 }
 
-// ===== Embed a fallback index.html (used only if the file isn't on disk) =====
+// ===== Embedded application shell and assets =====
 
 //go:embed index.html
 var embeddedIndex []byte
@@ -309,6 +327,9 @@ type server struct {
 	mu       sync.RWMutex
 	logfile  string // path to log file for statistics
 	baseURL  string // optional: public base URL (e.g., https://files.example.com) - auto-detects from request if empty
+
+	devTemplate        string
+	shellCSPReportOnly bool
 
 	sitemapMu sync.Mutex
 	sitemap   atomic.Pointer[sitemapSnapshot]
@@ -393,15 +414,15 @@ func matchesIgnoreRules(files fs.FS, filePath string) bool {
 
 // sitemapEntry represents an entry in the sitemap
 type sitemapEntry struct {
-	loc         string
-	lastmod     string
-	isImage     bool
-	imageURL    string
-	isVideo     bool
-	videoURL    string
-	isDocument  bool
-	isDir       bool
-	fileSize    int64
+	loc        string
+	lastmod    string
+	isImage    bool
+	imageURL   string
+	isVideo    bool
+	videoURL   string
+	isDocument bool
+	isDir      bool
+	fileSize   int64
 }
 
 type sitemapSnapshot struct {
@@ -788,14 +809,23 @@ type execReq struct {
 }
 
 type execResp struct {
-	Output    string  `json:"output"`
-	Download  string  `json:"download,omitempty"`
-	CWD       string  `json:"cwd,omitempty"`
-	Readme    *string `json:"readme,omitempty"`
-	DocType   string  `json:"docType,omitempty"`
-	Clipboard string  `json:"clipboard,omitempty"`
-	HTML      string  `json:"html,omitempty"`
-	Redirect  string  `json:"redirect,omitempty"`
+	Output          string     `json:"output"`
+	Download        string     `json:"download,omitempty"`
+	CWD             string     `json:"cwd,omitempty"`
+	Readme          *string    `json:"readme,omitempty"`
+	DocType         string     `json:"docType,omitempty"`
+	ReadmeTruncated bool       `json:"readmeTruncated,omitempty"`
+	Clipboard       string     `json:"clipboard,omitempty"`
+	HTML            string     `json:"html,omitempty"`
+	Help            bool       `json:"help,omitempty"`
+	Image           *execImage `json:"image,omitempty"`
+	Redirect        string     `json:"redirect,omitempty"`
+}
+
+type execImage struct {
+	URL  string `json:"url"`
+	Name string `json:"name"`
+	Size string `json:"size"`
 }
 
 type completeReq struct {
@@ -816,10 +846,11 @@ type completeResp struct {
 }
 
 type configResp struct {
-	CatMax  int64   `json:"catMax"`
-	Readme  *string `json:"readme,omitempty"`
-	DocType string  `json:"docType,omitempty"`
-	CWD     string  `json:"cwd,omitempty"`
+	CatMax          int64   `json:"catMax"`
+	Readme          *string `json:"readme,omitempty"`
+	DocType         string  `json:"docType,omitempty"`
+	ReadmeTruncated bool    `json:"readmeTruncated,omitempty"`
+	CWD             string  `json:"cwd,omitempty"`
 }
 
 // ===== Handlers =====
@@ -846,7 +877,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		if noJS || errors.Is(err, errHiddenPath) || !errors.Is(err, fs.ErrNotExist) {
 			http.NotFound(w, r)
 		} else {
-			s.serveMainIndex(w, r, "/")
+			s.serveMainIndex(w, "/")
 		}
 		return
 	}
@@ -863,7 +894,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if noJS {
 		serveNoJSDirectory(w, root, requestPath)
 	} else {
-		s.serveMainIndex(w, r, requestPath)
+		s.serveMainIndex(w, requestPath)
 	}
 }
 
@@ -956,15 +987,6 @@ func openVisibleFile(root *os.Root, filePath string) (*os.File, fs.FileInfo, err
 		return nil, nil, err
 	}
 	return file, opened, nil
-}
-
-func readVisibleFile(root *os.Root, name string) ([]byte, error) {
-	file, _, err := openVisibleFile(root, name)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	return io.ReadAll(file)
 }
 
 func readVisibleDir(root *os.Root, name string) ([]fs.DirEntry, error) {
@@ -1066,23 +1088,42 @@ func serveDownloadFile(w http.ResponseWriter, r *http.Request, root *os.Root, fi
 	http.ServeContent(w, r, filename, info.ModTime(), file)
 }
 
-func (s *server) serveMainIndex(w http.ResponseWriter, r *http.Request, initialPath string) {
-	var htmlContent []byte
-
-	// Serve from disk if available so you can iterate quickly.
-	if b, err := os.ReadFile("index.html"); err == nil {
-		htmlContent = b
+func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string) {
+	htmlContent := embeddedIndex
+	var nonce string
+	if s.devTemplate != "" {
+		var err error
+		htmlContent, err = os.ReadFile(s.devTemplate)
+		if err != nil {
+			http.Error(w, "Could not read the development template", http.StatusInternalServerError)
+			return
+		}
 	} else {
-		// Fallback to embedded.
-		htmlContent = embeddedIndex
+		nonce = rand.Text()
+		w.Header().Set("Cache-Control", "no-store")
+		s.setShellCSP(w, nonce)
 	}
 
-	// Replace placeholder with actual help message and initial path
-	processedHTML := s.processHTMLTemplate(htmlContent, initialPath)
+	processedHTML := s.processHTMLTemplate(htmlContent, initialPath, nonce)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(processedHTML)
+}
+
+func (s *server) setShellCSP(w http.ResponseWriter, nonce string) {
+	source := "'nonce-" + nonce + "'"
+	script := "script-src " + source
+	header := "Content-Security-Policy-Report-Only"
+	if !s.shellCSPReportOnly {
+		header = "Content-Security-Policy"
+		// Vendored Datastar compiles application-owned data-* expressions with Function.
+		script += " 'unsafe-eval'"
+	}
+	w.Header().Set(header, "default-src 'none'; "+script+
+		"; script-src-attr 'none'; style-src "+source+
+		"; style-src-attr 'none'; connect-src 'self'; img-src http: https:"+
+		"; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'self'")
 }
 
 // serveNoJSDirectory serves a plain HTML directory listing for no-JS fallback
@@ -1173,9 +1214,10 @@ func (s *server) handleVendoredDatastar(w http.ResponseWriter, r *http.Request) 
 }
 
 // processHTMLTemplate replaces placeholders in HTML with dynamic content
-func (s *server) processHTMLTemplate(htmlContent []byte, requestPath string) []byte {
+func (s *server) processHTMLTemplate(htmlContent []byte, requestPath, nonce string) []byte {
+	help := strings.TrimSpace(renderHelp())
 	// Split into lines and wrap each in HTML div tags
-	lines := strings.Split(strings.TrimSpace(renderHelp()), "\n")
+	lines := strings.Split(help, "\n")
 	var htmlLines []string
 	for _, line := range lines {
 		if line == "" {
@@ -1200,8 +1242,12 @@ func (s *server) processHTMLTemplate(htmlContent []byte, requestPath string) []b
 
 	escapedInitialPath := template.HTMLEscapeString(initialPath)
 
-	result := strings.ReplaceAll(string(htmlContent), "{{HELP_MESSAGE}}", formattedHelpMessage)
-	result = strings.ReplaceAll(result, "{{INITIAL_PATH}}", escapedInitialPath)
+	result := strings.NewReplacer(
+		"{{HELP_MESSAGE}}", formattedHelpMessage,
+		"{{HELP_MARKUP}}", help,
+		"{{INITIAL_PATH}}", escapedInitialPath,
+		"{{CSP_NONCE}}", nonce,
+	).Replace(string(htmlContent))
 	return []byte(result)
 }
 
@@ -1237,6 +1283,7 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
 	var readme, docType string
+	var readmeTruncated bool
 	if root, err := os.OpenRoot(s.rootAbs); err == nil {
 		defer func() { _ = root.Close() }()
 		if initialPath := r.URL.Query().Get("path"); initialPath != "" {
@@ -1245,10 +1292,12 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				sess.cwd = newV
 			}
 		}
-		readme, docType = readDocFile(root, rootedName(sess.cwd))
+		readme, docType, readmeTruncated = readDocFile(root, rootedName(sess.cwd))
 	}
 
-	_ = json.NewEncoder(w).Encode(configResp{CatMax: s.catMax, Readme: &readme, DocType: docType, CWD: sess.cwd})
+	_ = json.NewEncoder(w).Encode(configResp{
+		CatMax: s.catMax, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated, CWD: sess.cwd,
+	})
 }
 
 func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -1285,7 +1334,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "help":
-		_ = json.NewEncoder(w).Encode(execResp{HTML: renderHelp()})
+		_ = json.NewEncoder(w).Encode(execResp{HTML: renderHelp(), Help: true})
 		return
 
 	case "ls", "dir":
@@ -1389,9 +1438,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		readme, docType := readDocFile(root, name)
+		readme, docType, readmeTruncated := readDocFile(root, name)
 		// Include the new CWD in the response so client can update URL
-		_ = json.NewEncoder(w).Encode(execResp{Output: "", CWD: sess.cwd, Readme: &readme, DocType: docType})
+		_ = json.NewEncoder(w).Encode(execResp{
+			CWD: sess.cwd, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated,
+		})
 		return
 
 	case "cat":
@@ -1416,10 +1467,10 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		// Display images inline
 		if category == FileCategoryImage {
-			url := urlEscapeVirtual(vp)
-			name := filepath.Base(argv[0])
-			escapedURL := template.HTMLEscapeString(url)
-			escapedName := template.HTMLEscapeString(name)
+			image := execImage{URL: urlEscapeVirtual(vp), Name: filepath.Base(argv[0]), Size: formatHumanSize(info.Size())}
+			// Keep the HTML response for development templates using the previous protocol.
+			escapedURL := template.HTMLEscapeString(image.URL)
+			escapedName := template.HTMLEscapeString(image.Name)
 			imgHTML := fmt.Sprintf(
 				`<div style="margin: 0.5em 0;">`+
 					`<a href="%s" target="_blank" style="display: inline-block; text-decoration: none;">`+
@@ -1427,8 +1478,8 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 					`</a>`+
 					`<div style="color: #a6d189; font-size: 0.85em; margin-top: 0.25em;">📷 %s (%s)</div>`+
 					`</div>`,
-				escapedURL, escapedURL, escapedName, escapedName, formatHumanSize(info.Size()))
-			_ = json.NewEncoder(w).Encode(execResp{HTML: imgHTML})
+				escapedURL, escapedURL, escapedName, escapedName, image.Size)
+			_ = json.NewEncoder(w).Encode(execResp{HTML: imgHTML, Image: &image})
 			return
 		}
 
@@ -2286,6 +2337,8 @@ func main() {
 		addr            = flag.String("addr", getEnvOrDefault("LSGET_ADDR", "localhost:8080"), "address to listen on (env: LSGET_ADDR)")
 		dir             = flag.String("dir", getEnvOrDefault("LSGET_DIR", "."), "directory to expose as root (env: LSGET_DIR)")
 		catMax          = flag.Int64("catmax", getEnvOrDefaultInt64("LSGET_CATMAX", 4*1024), "max bytes printable via `cat` and used by completion (env: LSGET_CATMAX)")
+		devTemplate     = flag.String("dev-template", getEnvOrDefault("LSGET_DEV_TEMPLATE", ""), "use a local application template for development (env: LSGET_DEV_TEMPLATE)")
+		shellCSP        = flag.String("shell-csp", getEnvOrDefault("LSGET_SHELL_CSP", "enforce"), "application CSP mode: enforce or report-only (env: LSGET_SHELL_CSP)")
 		pidFileFlag     = flag.String("pid", getEnvOrDefault("LSGET_PID", ""), "path to PID file (env: LSGET_PID)")
 		logfileFlag     = flag.String("logfile", getEnvOrDefault("LSGET_LOGFILE", ""), "path to log file for statistics (env: LSGET_LOGFILE)")
 		baseURL         = flag.String("baseurl", getEnvOrDefault("LSGET_BASEURL", ""), "base URL for the site - full URL without trailing slash (e.g., https://files.example.com) (env: LSGET_BASEURL)")
@@ -2316,12 +2369,20 @@ func main() {
 		exitFunc(1)
 	}
 
+	if *shellCSP != "enforce" && *shellCSP != "report-only" {
+		fmt.Fprintln(os.Stderr, "shell-csp must be enforce or report-only")
+		exitFunc(1)
+		return
+	}
+
 	// Set global log file path
 	if *logfileFlag != "" {
 		logFile = *logfileFlag
 	}
 
 	s := newServer(rootAbs, *catMax, *logfileFlag, *baseURL)
+	s.devTemplate = *devTemplate
+	s.shellCSPReportOnly = *shellCSP == "report-only"
 
 	// Create PID file if specified
 	if *pidFileFlag != "" {
