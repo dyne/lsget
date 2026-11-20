@@ -123,6 +123,12 @@ A file in the served directory can be shared by its path, such as `/eudi/report.
 
 Direct file links and terminal downloads respect `.lsgetignore` rules on files and their parent directories. ZIP downloads omit ignored entries. Downloads can follow symlinks that resolve within the served root.
 
+### Terminal sessions
+
+Each terminal session stores its working directory in memory and uses an `sid` cookie marked `HttpOnly` and `SameSite=Lax`. Sessions expire after 30 minutes without a request that uses the working directory. The server retains up to 4,096 sessions and evicts the longest-idle session when it needs room. In-flight requests keep their sessions. If all slots are busy, requests that need a new session receive HTTP 503 and can retry. A returning browser with an expired or evicted session starts at the served root unless it opens a specific directory.
+
+Direct downloads and archive requests that specify their directory bypass terminal sessions. lsget sets `Secure` on session cookies for TLS requests. When an HTTPS-only reverse proxy terminates TLS, set `LSGET_SECURE_SESSION_COOKIE=true` or pass `-secure-session-cookie` and keep the lsget listener reachable only by the proxy. Forwarding headers do not control the cookie's `Secure` attribute.
+
 ### Application shell and published websites
 
 The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
@@ -149,6 +155,8 @@ Usage of ./lsget:
         path to log file for statistics
   -pid string
         path to PID file
+  -secure-session-cookie
+        require HTTPS for session cookies behind an HTTPS-only proxy
   -shell-csp string
         application CSP mode: enforce or report-only (default "enforce")
   -sitemap int
@@ -169,6 +177,7 @@ All configuration flags can also be set via environment variables with the `LSGE
 | `LSGET_DEV_TEMPLATE` | `-dev-template` | Local development template | `LSGET_DEV_TEMPLATE=./index.html` |
 | `LSGET_PID` | `-pid` | Path to PID file | `LSGET_PID=/var/run/lsget.pid` |
 | `LSGET_LOGFILE` | `-logfile` | Path to log file for statistics | `LSGET_LOGFILE=/var/log/lsget.log` |
+| `LSGET_SECURE_SESSION_COOKIE` | `-secure-session-cookie` | Require HTTPS for session cookies behind an HTTPS-only proxy | `LSGET_SECURE_SESSION_COOKIE=true` |
 | `LSGET_BASEURL` | `-baseurl` | **Optional:** Public URL (see below) | `LSGET_BASEURL=https://files.example.com` |
 | `LSGET_SHELL_CSP` | `-shell-csp` | Embedded application CSP mode | `LSGET_SHELL_CSP=enforce` |
 | `LSGET_SITEMAP` | `-sitemap` | In-memory sitemap refresh interval (minutes) | `LSGET_SITEMAP=60` |

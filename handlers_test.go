@@ -441,13 +441,18 @@ func TestHandleComplete_Basic(t *testing.T) {
 		t.Fatalf("complete items: %#v", cr.Items)
 	}
 
-	// now inside dir, files only
-	// simulate cwd change
-	s.sessions = map[string]*session{"x": {cwd: "/comp"}}
+	// Set CWD via config, then use the issued cookie for relative completion.
+	config := httptest.NewRecorder()
+	s.handleConfig(config, httptest.NewRequest(http.MethodGet, "/api/config?path=/comp", nil))
+	cookies := config.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("config session cookies: %v", cookies)
+	}
+	req2 := completeReq{Path: "fi", TextOnly: true}
+	b2, _ := json.Marshal(req2)
 	w2 := httptest.NewRecorder()
-	r2 := httptest.NewRequest("POST", "/api/complete", strings.NewReader(string(b)))
-	// attach cookie so getSession uses existing
-	r2.AddCookie(&http.Cookie{Name: "sid", Value: "x"})
+	r2 := httptest.NewRequest("POST", "/api/complete", strings.NewReader(string(b2)))
+	r2.AddCookie(cookies[0])
 	s.handleComplete(w2, r2)
 	if w2.Code != 200 {
 		t.Fatalf("complete2 status: %d", w2.Code)
@@ -456,11 +461,14 @@ func TestHandleComplete_Basic(t *testing.T) {
 	if err := json.NewDecoder(w2.Result().Body).Decode(&cr2); err != nil {
 		t.Fatal(err)
 	}
-	// It should suggest the directory itself (no prefix match), but we can also ask for text-only
-	req2 := completeReq{Path: "/comp/fi", TextOnly: true}
-	b2, _ := json.Marshal(req2)
+	if len(cr2.Items) != 1 || cr2.Items[0].Name != "file.txt" || cr2.Items[0].Dir {
+		t.Fatalf("relative completion items: %+v", cr2.Items)
+	}
+	// An absolute completion path works with no session.
+	req3 := completeReq{Path: "/comp/fi", TextOnly: true}
+	b3, _ := json.Marshal(req3)
 	w3 := httptest.NewRecorder()
-	r3 := httptest.NewRequest("POST", "/api/complete", strings.NewReader(string(b2)))
+	r3 := httptest.NewRequest("POST", "/api/complete", strings.NewReader(string(b3)))
 	s.handleComplete(w3, r3)
 	if w3.Code != 200 {
 		t.Fatalf("complete3 status: %d", w3.Code)

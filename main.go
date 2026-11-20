@@ -26,6 +26,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -315,18 +316,54 @@ var embeddedDatastarJS []byte
 
 // ===== Server state =====
 
+const (
+	sessionIdleTimeout = 30 * time.Minute
+	sessionSweepPeriod = time.Minute
+	maxSessions        = 4096
+)
+
 type session struct {
-	// virtual cwd like "/sub/dir"
-	cwd string
+	mu  sync.Mutex
+	cwd string // virtual path, guarded by mu
+
+	// The session map mutex guards request accounting and idle time.
+	active   int
+	idleFrom time.Time
+}
+
+func (s *session) workingDirectory() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cwd
+}
+
+func (s *session) changeDirectory(root *os.Root, target string) (string, error) {
+	// Resolve and validate relative changes against the last committed CWD.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	newV := joinVirtual(s.cwd, target)
+	info, err := visibleInfo(root, rootedName(newV))
+	if err != nil {
+		return "", errors.New("no such file or directory")
+	}
+	if !info.IsDir() {
+		return "", errors.New("not a directory")
+	}
+	s.cwd = newV
+	return newV, nil
 }
 
 type server struct {
-	rootAbs  string // absolute filesystem root we expose
-	catMax   int64  // max bytes allowed for `cat`
-	sessions map[string]*session
-	mu       sync.RWMutex
-	logfile  string // path to log file for statistics
-	baseURL  string // optional: public base URL (e.g., https://files.example.com) - auto-detects from request if empty
+	rootAbs string // absolute filesystem root we expose
+	catMax  int64  // max bytes allowed for `cat`
+	logfile string // path to log file for statistics
+	baseURL string // optional: public base URL (e.g., https://files.example.com) - auto-detects from request if empty
+
+	sessionsMu          sync.Mutex
+	sessions            map[string]*session
+	sessionNow          func() time.Time
+	sessionLimit        int
+	secureSessionCookie bool
 
 	devTemplate        string
 	shellCSPReportOnly bool
@@ -337,11 +374,13 @@ type server struct {
 
 func newServer(rootAbs string, catMax int64, logfile, baseURL string) *server {
 	return &server{
-		rootAbs:  rootAbs,
-		catMax:   catMax,
-		sessions: make(map[string]*session),
-		logfile:  logfile,
-		baseURL:  baseURL,
+		rootAbs:      rootAbs,
+		catMax:       catMax,
+		sessions:     make(map[string]*session),
+		sessionNow:   time.Now,
+		sessionLimit: maxSessions,
+		logfile:      logfile,
+		baseURL:      baseURL,
 	}
 }
 
@@ -645,29 +684,108 @@ func newSID() string {
 	return fmt.Sprintf("%x", b[:])
 }
 
-func (s *server) getSession(w http.ResponseWriter, r *http.Request) *session {
-	ck, err := r.Cookie("sid")
-	if err == nil {
-		s.mu.RLock()
-		if sess, ok := s.sessions[ck.Value]; ok {
-			s.mu.RUnlock()
+// acquireSession pins a session until the handler calls releaseSession.
+func (s *server) acquireSession(w http.ResponseWriter, r *http.Request) *session {
+	if ck, err := r.Cookie("sid"); err == nil && len(ck.Value) == 32 {
+		if sess := s.resumeSession(ck.Value); sess != nil {
 			return sess
 		}
-		s.mu.RUnlock()
 	}
-	id := newSID()
-	sess := &session{cwd: "/"}
-	s.mu.Lock()
-	s.sessions[id] = sess
-	s.mu.Unlock()
+
+	sess, id := s.createSession()
+	if sess == nil {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "session capacity temporarily reached", http.StatusServiceUnavailable)
+		return nil
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sid",
 		Value:    id,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil || s.secureSessionCookie,
 	})
 	return sess
+}
+
+func (s *server) resumeSession(id string) *session {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	sess := s.sessions[id]
+	if sess == nil {
+		return nil
+	}
+	if sess.expired(s.sessionNow()) {
+		delete(s.sessions, id)
+		return nil
+	}
+	sess.active++
+	return sess
+}
+
+func (s *server) createSession() (*session, string) {
+	id := newSID()
+	s.sessionsMu.Lock()
+	for s.sessions[id] != nil {
+		s.sessionsMu.Unlock()
+		id = newSID()
+		s.sessionsMu.Lock()
+	}
+	defer s.sessionsMu.Unlock()
+	if len(s.sessions) >= s.sessionLimit {
+		var oldestID string
+		var oldest *session
+		for id, sess := range s.sessions {
+			if sess.active == 0 && (oldest == nil || sess.idleFrom.Before(oldest.idleFrom)) {
+				oldestID, oldest = id, sess
+			}
+		}
+		if oldest == nil {
+			return nil, ""
+		}
+		delete(s.sessions, oldestID)
+	}
+	sess := &session{cwd: "/", active: 1}
+	s.sessions[id] = sess
+	return sess, id
+}
+
+func (s *server) releaseSession(sess *session) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	sess.active--
+	if sess.active == 0 {
+		sess.idleFrom = s.sessionNow()
+	}
+}
+
+func (s *session) expired(now time.Time) bool {
+	return s.active == 0 && now.Sub(s.idleFrom) >= sessionIdleTimeout
+}
+
+func (s *server) expireSessions() {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	now := s.sessionNow()
+	for id, sess := range s.sessions {
+		if sess.expired(now) {
+			delete(s.sessions, id)
+		}
+	}
+}
+
+func (s *server) runSessionCleanup(ctx context.Context) {
+	ticker := time.NewTicker(sessionSweepPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.expireSessions()
+		}
+	}
 }
 
 // ensure virtual path always starts with "/" and is cleaned
@@ -1281,28 +1399,30 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	sess := s.getSession(w, r)
+	sess := s.acquireSession(w, r)
+	if sess == nil {
+		return
+	}
+	defer s.releaseSession(sess)
+	cwd := sess.workingDirectory()
 	var readme, docType string
 	var readmeTruncated bool
 	if root, err := os.OpenRoot(s.rootAbs); err == nil {
 		defer func() { _ = root.Close() }()
 		if initialPath := r.URL.Query().Get("path"); initialPath != "" {
-			newV := cleanVirtual(initialPath)
-			if info, err := visibleInfo(root, rootedName(newV)); err == nil && info.IsDir() {
-				sess.cwd = newV
+			if newV, err := sess.changeDirectory(root, cleanVirtual(initialPath)); err == nil {
+				cwd = newV
 			}
 		}
-		readme, docType, readmeTruncated = readDocFile(root, rootedName(sess.cwd))
+		readme, docType, readmeTruncated = readDocFile(root, rootedName(cwd))
 	}
 
 	_ = json.NewEncoder(w).Encode(configResp{
-		CatMax: s.catMax, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated, CWD: sess.cwd,
+		CatMax: s.catMax, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated, CWD: cwd,
 	})
 }
 
 func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
-	sess := s.getSession(w, r)
-
 	var req execReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -1316,6 +1436,27 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	args := parseArgs(line)
 	cmd := args[0]
 	argv := args[1:]
+	var sess *session
+	var cwd string
+	defer func() {
+		if sess != nil {
+			s.releaseSession(sess)
+		}
+	}()
+	// A command may resolve several paths. Load one snapshot on its first relative path.
+	cwdFor := func(target string) (string, bool) {
+		if path.IsAbs(target) {
+			return "/", true
+		}
+		if sess == nil {
+			sess = s.acquireSession(w, r)
+			if sess == nil {
+				return "", false
+			}
+			cwd = sess.workingDirectory()
+		}
+		return cwd, true
+	}
 	var root *os.Root
 	switch cmd {
 	case "ls", "dir", "cd", "cat", "url", "share", "sum", "checksum", "tree", "find", "grep":
@@ -1330,7 +1471,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	switch cmd {
 	case "pwd":
-		_ = json.NewEncoder(w).Encode(execResp{Output: sess.cwd, CWD: sess.cwd})
+		cwd, ok := cwdFor("")
+		if !ok {
+			return
+		}
+		_ = json.NewEncoder(w).Encode(execResp{Output: cwd, CWD: cwd})
 		return
 
 	case "help":
@@ -1338,10 +1483,15 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "ls", "dir":
+		// The parent marker depends on CWD even with an explicit listing path.
+		cwd, ok := cwdFor("")
+		if !ok {
+			return
+		}
 		long := false
 		showHidden := false
 		humanReadable := false
-		target := sess.cwd
+		target := cwd
 		// Parse arguments: flags and optional path
 		for _, arg := range argv {
 			if strings.HasPrefix(arg, "-") {
@@ -1360,7 +1510,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				target = arg
 			}
 		}
-		virtualPath := joinVirtual(sess.cwd, target)
+		virtualPath := joinVirtual(cwd, target)
 		name := rootedName(virtualPath)
 		info, err := visibleInfo(root, name)
 		if err != nil {
@@ -1385,7 +1535,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var lines []string
-		if sess.cwd != "/" {
+		if cwd != "/" {
 			parent := colorBlue + colorBold + "../" + colorReset
 			if long {
 				parent = "drwxr-xr-x          - " + parent
@@ -1417,18 +1567,16 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				target = "/"
 			}
 		}
-		newV := joinVirtual(sess.cwd, target)
-		name := rootedName(newV)
-		info, err := visibleInfo(root, name)
+		sess = s.acquireSession(w, r)
+		if sess == nil {
+			return
+		}
+		newV, err := sess.changeDirectory(root, target)
 		if err != nil {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "cd: no such file or directory"})
+			_ = json.NewEncoder(w).Encode(execResp{Output: "cd: " + err.Error()})
 			return
 		}
-		if !info.IsDir() {
-			_ = json.NewEncoder(w).Encode(execResp{Output: "cd: not a directory"})
-			return
-		}
-		sess.cwd = newV
+		name := rootedName(newV)
 
 		// Check if directory contains index.html
 		indexPath := path.Join(name, "index.html")
@@ -1441,7 +1589,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		readme, docType, readmeTruncated := readDocFile(root, name)
 		// Include the new CWD in the response so client can update URL
 		_ = json.NewEncoder(w).Encode(execResp{
-			CWD: sess.cwd, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated,
+			CWD: newV, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated,
 		})
 		return
 
@@ -1450,7 +1598,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "cat: missing operand"})
 			return
 		}
-		vp := joinVirtual(sess.cwd, argv[0])
+		cwd, ok := cwdFor(argv[0])
+		if !ok {
+			return
+		}
+		vp := joinVirtual(cwd, argv[0])
 		filePath := rootedName(vp)
 		info, err := visibleInfo(root, filePath)
 		if err != nil {
@@ -1526,6 +1678,10 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = root.Close() }()
+		cwd, ok := cwdFor(pattern)
+		if !ok {
+			return
+		}
 
 		// Get IP address for logging
 		ip := getClientIP(r)
@@ -1533,7 +1689,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// Check if pattern contains wildcards or is a directory
 		if strings.ContainsAny(pattern, "*?[") || pattern == "." {
 			// Handle pattern-based download (multiple files)
-			files, err := collectFilesForDownload(root, sess.cwd, pattern)
+			files, err := collectFilesForDownload(root, cwd, pattern)
 			if err != nil {
 				_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("download: %v", err)})
 				return
@@ -1551,13 +1707,13 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			}
 			// Multiple files, create zip
 			s.logCommand("get", "(pattern match)", ip)
-			downloadURL := "/api/download?pattern=" + url.QueryEscape(pattern) + "&cwd=" + url.QueryEscape(sess.cwd)
+			downloadURL := "/api/download?pattern=" + url.QueryEscape(pattern) + "&cwd=" + url.QueryEscape(cwd)
 			_ = json.NewEncoder(w).Encode(execResp{Output: fmt.Sprintf("Downloading %d files as archive.zip", len(files)), Download: downloadURL})
 			return
 		}
 
 		// Check if it's a directory
-		vp := joinVirtual(sess.cwd, pattern)
+		vp := joinVirtual(cwd, pattern)
 		name := rootedName(vp)
 		info, err := visibleInfo(root, name)
 		if err != nil {
@@ -1597,7 +1753,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// Parse options
 		showHidden := false
 		maxDepth := -1 // unlimited by default
-		target := sess.cwd
+		target := ""
 
 		for _, arg := range argv {
 			if strings.HasPrefix(arg, "-") {
@@ -1613,11 +1769,15 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				// Directory argument
-				target = joinVirtual(sess.cwd, arg)
+				target = arg
 			}
 		}
 
-		name := rootedName(target)
+		cwd, ok := cwdFor(target)
+		if !ok {
+			return
+		}
+		name := rootedName(joinVirtual(cwd, target))
 		info, err := visibleInfo(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "tree: no such file or directory"})
@@ -1644,7 +1804,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	case "find":
 		// Parse options
-		searchPath := sess.cwd
+		searchPath := ""
 		namePattern := "*"
 		typeFilter := "" // "f" for files, "d" for directories, "" for both
 
@@ -1659,7 +1819,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 				i++ // skip next argument
 			} else if !strings.HasPrefix(arg, "-") {
 				// Path argument
-				searchPath = joinVirtual(sess.cwd, arg)
+				searchPath = arg
 			}
 		}
 
@@ -1669,7 +1829,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		name := rootedName(searchPath)
+		cwd, ok := cwdFor(searchPath)
+		if !ok {
+			return
+		}
+		name := rootedName(joinVirtual(cwd, searchPath))
 		info, err := visibleInfo(root, name)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "find: no such file or directory"})
@@ -1700,8 +1864,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: missing file operand"})
 			return
 		}
+		cwd, ok := cwdFor(argv[0])
+		if !ok {
+			return
+		}
 
-		vp := joinVirtual(sess.cwd, argv[0])
+		vp := joinVirtual(cwd, argv[0])
 		info, err := visibleInfo(root, rootedName(vp))
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "url: no such file or directory"})
@@ -1798,7 +1966,11 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 		var results []string
 		for _, file := range files {
-			vp := joinVirtual(sess.cwd, file)
+			cwd, ok := cwdFor(file)
+			if !ok {
+				return
+			}
+			vp := joinVirtual(cwd, file)
 			name := rootedName(vp)
 			info, err := visibleInfo(root, name)
 			if err != nil {
@@ -1836,8 +2008,12 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: missing file operand"})
 			return
 		}
+		cwd, ok := cwdFor(argv[0])
+		if !ok {
+			return
+		}
 
-		vp := joinVirtual(sess.cwd, argv[0])
+		vp := joinVirtual(cwd, argv[0])
 		f, _, err := openVisibleFile(root, rootedName(vp))
 		if errors.Is(err, errDownloadDirectory) {
 			_ = json.NewEncoder(w).Encode(execResp{Output: "sum: is a directory"})
@@ -2161,7 +2337,6 @@ func urlEscapeVirtual(v string) string {
 }
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	sess := s.getSession(w, r)
 	query := r.URL.Query()
 	root, err := os.OpenRoot(s.rootAbs)
 	if err != nil {
@@ -2197,8 +2372,13 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	if pattern := query.Get("pattern"); pattern != "" {
 		cwd := query.Get("cwd")
-		if cwd == "" {
-			cwd = sess.cwd
+		if cwd == "" && !path.IsAbs(pattern) {
+			sess := s.acquireSession(w, r)
+			if sess == nil {
+				return
+			}
+			defer s.releaseSession(sess)
+			cwd = sess.workingDirectory()
 		}
 		files, err := collectFilesForDownload(root, cwd, pattern)
 		if errors.Is(err, fs.ErrNotExist) || (err == nil && len(files) == 0) {
@@ -2217,7 +2397,6 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
-	sess := s.getSession(w, r)
 	var req completeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -2239,7 +2418,12 @@ func (s *server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(arg, "/") {
 		baseV = cleanVirtual(dirPart)
 	} else {
-		baseV = joinVirtual(sess.cwd, dirPart)
+		sess := s.acquireSession(w, r)
+		if sess == nil {
+			return
+		}
+		defer s.releaseSession(sess)
+		baseV = joinVirtual(sess.workingDirectory(), dirPart)
 	}
 	root, err := os.OpenRoot(s.rootAbs)
 	if err != nil {
@@ -2332,6 +2516,7 @@ func main() {
 	}
 
 	// Define flags with environment variable support (LSGET_* prefix)
+	secureCookieDefault, _ := strconv.ParseBool(os.Getenv("LSGET_SECURE_SESSION_COOKIE"))
 	var (
 		printVersion    = flag.Bool("version", false, "Print the version of this software and exits")
 		addr            = flag.String("addr", getEnvOrDefault("LSGET_ADDR", "localhost:8080"), "address to listen on (env: LSGET_ADDR)")
@@ -2339,6 +2524,7 @@ func main() {
 		catMax          = flag.Int64("catmax", getEnvOrDefaultInt64("LSGET_CATMAX", 4*1024), "max bytes printable via `cat` and used by completion (env: LSGET_CATMAX)")
 		devTemplate     = flag.String("dev-template", getEnvOrDefault("LSGET_DEV_TEMPLATE", ""), "use a local application template for development (env: LSGET_DEV_TEMPLATE)")
 		shellCSP        = flag.String("shell-csp", getEnvOrDefault("LSGET_SHELL_CSP", "enforce"), "application CSP mode: enforce or report-only (env: LSGET_SHELL_CSP)")
+		secureCookie    = flag.Bool("secure-session-cookie", secureCookieDefault, "require HTTPS for session cookies behind an HTTPS-only proxy (env: LSGET_SECURE_SESSION_COOKIE)")
 		pidFileFlag     = flag.String("pid", getEnvOrDefault("LSGET_PID", ""), "path to PID file (env: LSGET_PID)")
 		logfileFlag     = flag.String("logfile", getEnvOrDefault("LSGET_LOGFILE", ""), "path to log file for statistics (env: LSGET_LOGFILE)")
 		baseURL         = flag.String("baseurl", getEnvOrDefault("LSGET_BASEURL", ""), "base URL for the site - full URL without trailing slash (e.g., https://files.example.com) (env: LSGET_BASEURL)")
@@ -2383,6 +2569,7 @@ func main() {
 	s := newServer(rootAbs, *catMax, *logfileFlag, *baseURL)
 	s.devTemplate = *devTemplate
 	s.shellCSPReportOnly = *shellCSP == "report-only"
+	s.secureSessionCookie = *secureCookie
 
 	// Create PID file if specified
 	if *pidFileFlag != "" {
@@ -2396,10 +2583,10 @@ func main() {
 		pidFile = *pidFileFlag
 	}
 
-	// Start sitemap generator if configured
-	sitemapContext, cancelSitemap := context.WithCancel(context.Background())
-	defer cancelSitemap()
-	s.startSitemapGenerator(sitemapContext, time.Duration(*sitemapInterval)*time.Minute)
+	background, cancelBackground := context.WithCancel(context.Background())
+	defer cancelBackground()
+	go s.runSessionCleanup(background)
+	s.startSitemapGenerator(background, time.Duration(*sitemapInterval)*time.Minute)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", s.handleConfig)
