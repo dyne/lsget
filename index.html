@@ -700,7 +700,7 @@
     <div
       class="layout"
       data-initial-path="{{INITIAL_PATH}}"
-      data-signals='{ "ps1": "guest@browser:/$ ", "cwd": "/", "current": "", "cursorPos": 0, "buffer": "{{HELP_MESSAGE}}", "history": [], "histIndex": 0, "readme": "", "showReadme": false }'
+      data-signals='{ "ps1": "guest@browser:/$ ", "cwd": "/", "current": "", "cursorPos": 0, "buffer": "{{HELP_MESSAGE}}", "completionList": "", "history": [], "histIndex": 0, "readme": "", "showReadme": false }'
       data-on-load="
         // Initialize path from server-rendered attribute
         const initialPath = el.getAttribute('data-initial-path') || '/';
@@ -782,6 +782,9 @@
         data-on-click="el.querySelector('#ghost').focus()"
         data-on-keydown="
          const k=evt.key;
+         if (k !== 'Tab') {
+           $completionList = '';
+         }
          if (k==='Enter') {
            const cmd = $current;
            $buffer += `<div class='line'><span class='ps1'>${escapeHTML($ps1)}</span>${escapeHTML(cmd)}</div>`;
@@ -880,7 +883,10 @@
              })
              .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
              .then(({ items }) => {
-               if (!Array.isArray(items) || items.length === 0) return;
+               if (!Array.isArray(items) || items.length === 0) {
+                 $completionList = '';
+                 return;
+               }
                const slash = (pathArg||'').lastIndexOf('/');
                const dirPart  = slash >= 0 ? pathArg.slice(0, slash+1) : '';
                const basePart = slash >= 0 ? pathArg.slice(slash+1) : (pathArg||'');
@@ -893,13 +899,15 @@
                if (lcp && lcp !== basePart) {
                  $current = cmd + ' ' + flagsPart + (dirPart + lcp);
                  $cursorPos = $current.length; // Fix cursor position
+                 $completionList = '';
                } else if (items.length === 1) {
                  const one = items[0];
                  $current = cmd + ' ' + flagsPart + (dirPart + one.name + (one.dir ? '/' : ''));
                  $cursorPos = $current.length; // Fix cursor position
+                 $completionList = '';
                } else {
                  const list = items.map(it => it.name + (it.dir ? '/' : '')).join('  ');
-                 $buffer += `<div class='line out'>${makeClickable(ansiToHtml(list))}</div>`;
+                 $completionList = `<div class='line out'>${makeClickable(ansiToHtml(list))}</div>`;
                  const sc = el.querySelector('.screen'); requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight; });
                }
              })
@@ -1011,7 +1019,7 @@
             const before = $current.slice(0, $cursorPos);
             const cursorChar = $current[$cursorPos] || ' ';
             const after = $current.slice($cursorPos + 1);
-            el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${escapeHTML($ps1)}</span><span class='input-before'></span><span class='cursor'></span><span class='input-after'></span></div>`;
+            el.innerHTML = $buffer + `<div class='line'><span class='ps1'>${escapeHTML($ps1)}</span><span class='input-before'></span><span class='cursor'></span><span class='input-after'></span></div>` + $completionList;
             el.querySelector('.input-before').textContent = before;
             el.querySelector('.cursor').textContent = cursorChar;
             el.querySelector('.input-after').textContent = after;
