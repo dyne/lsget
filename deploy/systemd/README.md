@@ -17,7 +17,7 @@ This directory contains systemd service files and installation scripts for deplo
 
 1. Build or download the lsget binary:
    ```bash
-   go build -o lsget .
+   go build -o lsget ./cmd/lsget
    ```
 
 2. Install the binary system-wide:

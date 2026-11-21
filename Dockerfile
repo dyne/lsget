@@ -17,12 +17,12 @@ COPY . .
 ARG VERSION=dev
 
 # Build the application with version info
-# Static binary with embedded assets (JS dependencies in assets/js/)
+# Static binary with embedded assets.
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -mod=mod \
-    -ldflags="-w -s -X main.version=${VERSION}" \
+    -ldflags="-w -s -X github.com/dyne/lsget/internal/lsget.version=${VERSION}" \
     -a -installsuffix cgo \
-    -o lsget .
+    -o lsget ./cmd/lsget
 
 # Runtime stage - Distroless for maximum security
 # No shell, no package manager, minimal attack surface

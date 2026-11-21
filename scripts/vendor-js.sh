@@ -35,7 +35,7 @@ if [ -z "$mode" ]; then
     exit 2
 fi
 
-assets=$(CDPATH='' cd "$(dirname "$0")/../assets/js" && pwd)
+assets=$(CDPATH='' cd "$(dirname "$0")/../internal/lsget/assets/js" && pwd)
 cd "$assets"
 set -- marked.min.js marked.LICENSE.md datastar.js datastar.LICENSE.md
 

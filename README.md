@@ -35,8 +35,8 @@ Perfect for:
 | Smart autocompletion | **Complete** suggests directories and files, with text and size limits for `cat` suggestions. |
 | Colourised output    | Directories in bright blue (Ubuntu style) with trailing `/`, executable files highlighted. |
 | Session isolation    | Each browser tab keeps its own working directory. |
-| Live reload          | `task dev` ⇒ [Air](https://github.com/cosmtrek/air) rebuilds `main.go` on save for rapid development. |
-| Zero‑config binary   | `go run .` or `go build` produces a single executable with embedded assets. |
+| Live reload          | `task dev` uses [Air](https://github.com/cosmtrek/air) to rebuild the server when Go source changes. |
+| Zero‑config binary   | `go build -o lsget ./cmd/lsget` produces a single executable with embedded assets. |
 | Supply chain security| JavaScript dependencies vendored locally to reduce supply chain attacks. |
 
 ![Screenshot](./screenshot.png)
@@ -114,7 +114,7 @@ docker-compose logs -f
 From the repository root, build the binary with the Go toolchain pinned in [go.mod](go.mod). If you downloaded a release, start with the version check.
 
 ```sh
-go build -o lsget .
+go build -o lsget ./cmd/lsget
 ./lsget -version
 ./lsget -h
 ```
@@ -189,11 +189,11 @@ An archive that exceeds the entry, depth or path budget is rejected before strea
 
 ### Application shell and published websites
 
-The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `./lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
+The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `./lsget -dir ./files -dev-template ./internal/lsget/index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
 
-Terminal controls live in `assets/js/terminal.js` and rendering helpers in `assets/js/terminal-view.js`. Rebuild with Go when editing either module. The embedded shell uses `Cache-Control: no-store` and loads its scripts and bundled favicon from `/assets/lsget-shell/<version>/`. The version is a SHA-256 digest of the shell and its assets. These assets can be cached for a year. After an upgrade, reloading the page gets the new shell and asset paths. A missing asset from an older version returns HTTP 404 until the page is reloaded.
+Terminal controls live in `internal/lsget/assets/js/terminal.js` and rendering helpers in `internal/lsget/assets/js/terminal-view.js`. Rebuild with Go when editing either module. The embedded shell uses `Cache-Control: no-store` and loads its scripts and bundled favicon from `/assets/lsget-shell/<version>/`. The version is a SHA-256 digest of the shell and its assets. These assets can be cached for a year. After an upgrade, reloading the page gets the new shell and asset paths. A missing asset from an older version returns HTTP 404 until the page is reloaded.
 
-The browser dependency revisions, download sources, and license notices are documented in [assets/js/README.md](assets/js/README.md). Run `task vendor-check` to verify the checked-in files offline. The native CI and binary release jobs use the toolchain pinned in `go.mod`. When changing that toolchain, update `mise.toml` to match.
+The browser dependency revisions, download sources, and license notices are documented in [vendor notes](internal/lsget/assets/js/README.md). Run `task vendor-check` to verify the checked-in files offline. The native CI and binary release jobs use the toolchain pinned in `go.mod`. When changing that toolchain, update `mise.toml` to match.
 
 A visible `index.html` in a served directory takes precedence over the terminal, including when the development template is enabled. Published HTML and its assets keep their own serving behavior. Active content hosted on the same origin can interact with the terminal and its APIs using the visitor’s browser session. Serve sites from a separate origin when their authors are outside the terminal’s trust boundary.
 

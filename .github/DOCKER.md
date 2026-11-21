@@ -26,7 +26,7 @@ The workflow runs when:
 
 3. **Version information**: The version is embedded in the binary using:
    ```bash
-   -ldflags="-X main.version=${VERSION}"
+   -ldflags="-X github.com/dyne/lsget/internal/lsget.version=${VERSION}"
    ```
 
 4. **Build cache**: Uses GitHub Actions cache for faster builds
