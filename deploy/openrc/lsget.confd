@@ -23,5 +23,15 @@ LSGET_CATMAX="4096"
 # Use a unique path per instance if you set this.
 # LSGET_PID="/var/lib/lsget/lsget.pid"
 
+# Public URL for sitemap generation, origin checks and url/share commands.
+# LSGET_BASEURL="https://files.example.com"
+
+# In-memory sitemap refresh interval in minutes (0 = on demand only).
+# LSGET_SITEMAP="0"
+
+# HTTPS-only proxy settings. Use the CIDR of the proxy's actual peer address.
+# LSGET_SECURE_SESSION_COOKIE="true"
+# LSGET_TRUSTED_PROXIES="127.0.0.1/32"
+
 # Additional command line options (optional)
 # LSGET_OPTS=""
