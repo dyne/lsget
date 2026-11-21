@@ -66,6 +66,8 @@ Perfect for:
 ### Binary Installation
 Single binary, no need to install anything!
 
+See the [release download names and license notices](.github/RELEASING.md#binary-names) for all supported targets.
+
 ```bash
 # Download latest release
 curl -fsSL  "https://github.com/dyne/lsget/releases/latest/download/lsget-$(uname -s)-$(uname -m)" -o lsget && chmod +x lsget
@@ -162,6 +164,8 @@ An archive that exceeds the entry, depth or path budget is rejected before strea
 The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
 
 Terminal controls live in `assets/js/terminal.js` and rendering helpers in `assets/js/terminal-view.js`. Rebuild with Go when editing either module. The embedded shell uses `Cache-Control: no-store` and loads its scripts from `/assets/lsget-shell/<version>/`, where the version is a SHA-256 digest of the shell and its scripts. Those script responses can be cached for a year. After an upgrade, reloading the page gets the new shell and script paths. A missing script from an older version returns HTTP 404 until the page is reloaded.
+
+The browser dependency revisions, download sources, and license notices are documented in [assets/js/README.md](assets/js/README.md). Run `task vendor-check` to verify the checked-in files offline. Local setup with mise and the native CI and binary release jobs use Go 1.24.5. When changing the toolchain, update `go.mod` and `mise.toml` together.
 
 A visible `index.html` in a served directory takes precedence over the terminal, including when the development template is enabled. Published HTML and its assets keep their own serving behavior. Active content hosted on the same origin can interact with the terminal and its APIs using the visitor’s browser session. Serve sites from a separate origin when their authors are outside the terminal’s trust boundary.
 

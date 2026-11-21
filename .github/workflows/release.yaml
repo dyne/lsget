@@ -7,6 +7,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: true
@@ -16,42 +19,123 @@ jobs:
     name: 🚨 Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          go-version: 1.24.5
-      - uses: golangci/golangci-lint-action@v9
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.4.0 # Match the tool in go.mod.
   test:
     name: 🧪 Test
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Verify vendored browser dependencies
+        run: sh scripts/vendor-js.sh check
       - name: Run go tests
         run: go test -v ./...
+      - name: Run the race detector
+        run: go test -race -count=1 ./...
+
+  vulnerabilities:
+    name: Scan Go dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Run govulncheck
+        run: |
+          GOBIN="$RUNNER_TEMP/lsget-tools" go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$RUNNER_TEMP/lsget-tools/govulncheck" -show verbose ./...
 
   release:
     name: 🔖 Release
     runs-on: ubuntu-latest
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag: ${{ steps.release.outputs.tag }}
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          go-version: 1.24.5
-      - uses: go-semantic-release/action@v1
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Install pinned release tools
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/lsget-release"
+          cd "$RUNNER_TEMP/lsget-release"
+          curl --disable --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 120 --output semantic-release \
+            https://github.com/go-semantic-release/semantic-release/releases/download/v2.31.0/semantic-release_v2.31.0_linux_amd64
+          curl --disable --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 120 --output goreleaser.tar.gz \
+            https://github.com/goreleaser/goreleaser/releases/download/v2.20.3/goreleaser_Linux_x86_64.tar.gz
+          sha256sum --check <<'CHECKSUMS'
+          b8f518b1aeb1d1742f4e6e91a179b707cea4309a64fe3854f465bf724f04f6d3  semantic-release
+          a36d5d7d07a5e538e052cef2a9f93f1cd4af493cf5a3712b9177c1ebe360f0e7  goreleaser.tar.gz
+          CHECKSUMS
+          tar -xzf goreleaser.tar.gz goreleaser
+          chmod 0755 semantic-release goreleaser
+          ./semantic-release --version
+          ./goreleaser --version
+      - name: Keep the release checkout clean
+        run: printf '/.semrel/\n' >> "$(git rev-parse --git-path info/exclude)"
+      - uses: go-semantic-release/action@2e9dc4247a6004f8377781bef4cb9dad273a741f # v1
         id: release
         with:
-          hooks: goreleaser
+          bin: ${{ runner.temp }}/lsget-release/semantic-release
+          changelog-file: ${{ runner.temp }}/lsget-release/CHANGELOG.md
+          custom-arguments: >-
+            --plugin-resolver github
+            --provider github@1.19.0
+            --ci-condition default@1.11.0
+            --commit-analyzer default@1.15.0
+            --changelog-generator default@1.15.0
+            --files-updater npm@1.11.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MATTERMOST_WEBHOOK: ${{ secrets.MATTERMOST_WEBHOOK }}
+      - name: Fetch the release tag
+        if: steps.release.outputs.version != ''
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          tag="refs/tags/v$RELEASE_VERSION"
+          git fetch --no-tags origin "$tag:$tag"
+          if [ "$(git rev-parse "$tag^{commit}")" != "$GITHUB_SHA" ]; then
+            printf 'Release tag %s does not match the tested commit %s\n' "$tag" "$GITHUB_SHA" >&2
+            exit 1
+          fi
+      - name: Publish binaries
+        if: steps.release.outputs.version != ''
+        run: '"$RUNNER_TEMP/lsget-release/goreleaser" release --clean'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: v${{ steps.release.outputs.version }}
+      - name: Attest the release checksums
+        if: steps.release.outputs.version != ''
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-checksums: dist/lsget_v${{ steps.release.outputs.version }}_checksums.txt
 
   docker:
     name: 🐳 Build & Push Docker
