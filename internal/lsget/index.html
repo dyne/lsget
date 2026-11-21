@@ -142,6 +142,7 @@
         flex: 1;
         padding: 1rem;
         overflow: auto;
+        overflow-wrap: anywhere;
         border-left: 1px solid var(--term-border);
         background: var(--ctp-latte-base);
         color: var(--ctp-latte-text);
@@ -233,7 +234,6 @@
       .readme h4,
       .readme h5,
       .readme h6 {
-        color: var(--ctp-latte-blue);
         border-bottom: 2px solid var(--ctp-latte-surface1);
         padding-bottom: 0.3em;
       }
@@ -269,19 +269,7 @@
         color: var(--ctp-latte-red);
       }
       .readme h2 {
-        color: var(--ctp-latte-peach);
-      }
-      .readme h3 {
-        color: var(--ctp-latte-yellow);
-      }
-      .readme h4 {
-        color: var(--ctp-latte-green);
-      }
-      .readme h5 {
-        color: var(--ctp-latte-teal);
-      }
-      .readme h6 {
-        color: var(--ctp-latte-blue);
+        color: var(--ctp-latte-mauve);
       }
 
       .readme p {
@@ -290,13 +278,22 @@
       }
 
       .readme a {
-        color: var(--ctp-latte-sapphire);
-        text-decoration: none;
+        color: var(--ctp-latte-mauve);
+        text-decoration: underline;
+        text-underline-offset: 0.14em;
+      }
+
+      .readme th :is(a, strong, em) {
+        color: inherit;
       }
 
       .readme a:hover {
-        color: var(--ctp-latte-blue);
-        text-decoration: underline;
+        text-decoration-thickness: 0.1em;
+      }
+
+      .readme a:active {
+        color: var(--ctp-latte-text);
+        text-decoration-thickness: 0.15em;
       }
 
       .readme img {
@@ -310,7 +307,7 @@
 
       .readme code {
         background: var(--ctp-latte-surface0);
-        color: var(--ctp-latte-red);
+        color: var(--ctp-latte-text);
         padding: 0.2em 0.4em;
         border-radius: 3px;
         font-size: 0.9em;
@@ -336,7 +333,7 @@
         border-left: 4px solid var(--ctp-latte-mauve);
         margin: 0;
         padding-left: 1em;
-        color: var(--ctp-latte-subtext0);
+        color: var(--ctp-latte-subtext1);
         font-style: italic;
       }
 
@@ -374,7 +371,6 @@
 
       .readme th {
         background: var(--ctp-latte-surface0);
-        color: var(--ctp-latte-blue);
         font-weight: bold;
       }
 
@@ -405,10 +401,12 @@
       .ps1 {
         color: var(--ctp-frappe-green);
       }
-      .help-version { color: #666; }
-      .help-note { color: #888; }
-      .help-heading { color: #aaa; }
-      .help-description { color: #bbb; }
+      .help-version,
+      .help-note,
+      .help-description {
+        color: var(--ctp-frappe-subtext1);
+      }
+      .help-heading { font-weight: 600; }
       .input {
         color: var(--ctp-frappe-text);
       }
@@ -432,6 +430,12 @@
       .readme:focus-visible {
         outline-color: var(--ctp-latte-blue);
         outline-offset: -2px;
+      }
+      .readme a:focus-visible {
+        outline-offset: 2px;
+      }
+      .mobile-toggle[aria-expanded="true"]:focus-visible {
+        outline-color: var(--ctp-latte-blue);
       }
       .out {
         color: var(--ctp-frappe-text);

@@ -218,6 +218,8 @@ func serveNoJSDirectory(ctx context.Context, w http.ResponseWriter, root *os.Roo
 %s
 <style>
 :root { color-scheme: dark; background: #303446; color: #c6d0f5; font: 1rem/1.5 system-ui, sans-serif; }
+/* Leave room for the sticky Up link's minimum size or padded line, plus its border. */
+html { scroll-padding-block-start: calc(max(44px, 2.5rem) + 1px); }
 * { box-sizing: border-box; }
 body { margin: 0; }
 a { color: #babbf1; text-decoration: underline; text-underline-offset: .2em; }
@@ -239,7 +241,7 @@ main { padding-block: 1.5rem 3rem; }
 h1 { margin: 0 0 1.5rem; font-size: 1.5rem; line-height: 1.3; overflow-wrap: anywhere; }
 .files { list-style: none; margin: 0; padding: 0; }
 .files > li { border-bottom: 1px solid #51576d; padding-bottom: .625rem; }
-.file-row { display: block; min-height: 44px; padding: .75rem .5rem .5rem; overflow-wrap: anywhere; scroll-margin-top: 6rem; }
+.file-row { display: block; min-height: 44px; padding: .75rem .5rem .5rem; overflow-wrap: anywhere; }
 .file-meta { display: block; padding-inline: .5rem; color: #b5bfe2; font-size: .875rem; font-variant-numeric: tabular-nums; }
 .file-actions { margin: .5rem .5rem 0; }
 summary { min-height: 44px; padding: .625rem .5rem; cursor: pointer; color: #babbf1; text-decoration: underline; text-underline-offset: .2em; }
