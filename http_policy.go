@@ -9,55 +9,19 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
-	"time"
 )
 
-const (
-	maxCommandBodyBytes = 8 * 1024
-	maxRequestHeaders   = 64 * 1024
-	requestHeaderLimit  = 5 * time.Second
-	requestReadLimit    = 10 * time.Second
-	keepAliveIdleLimit  = 60 * time.Second
-)
+const maxCommandBodyBytes = 8 * 1024
 
-func (s *server) httpServer(addr string) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/config", allowMethods(s.handleConfig, http.MethodGet))
-	mux.HandleFunc("/api/exec", allowMethods(s.handleExec, http.MethodPost))
-	mux.HandleFunc("/api/complete", allowMethods(s.handleComplete, http.MethodPost))
-	for pattern, handler := range map[string]http.HandlerFunc{
-		"/api/download":            s.handleDownload,
-		"/api/static/":             s.handleStaticFile,
-		"/sitemap.xml":             s.handleSitemap,
-		"/assets/js/marked.min.js": s.handleVendoredMarked,
-		"/assets/js/datastar.js":   s.handleVendoredDatastar,
-		"/":                        s.handleIndex,
-	} {
-		mux.HandleFunc(pattern, allowMethods(handler, http.MethodGet, http.MethodHead))
+// A browser tab owns its CWD. Each request carries its directory snapshot so
+// a delayed command cannot modify the directory used by a newer request.
+func requestCWD(r *http.Request) string {
+	cwd := r.URL.Query().Get("cwd")
+	if cwd == "" {
+		return ""
 	}
-	return &http.Server{
-		Addr:              addr,
-		Handler:           s.logRequests(mux),
-		MaxHeaderBytes:    maxRequestHeaders,
-		ReadHeaderTimeout: requestHeaderLimit,
-		ReadTimeout:       requestReadLimit,
-		IdleTimeout:       keepAliveIdleLimit,
-		// A fixed WriteTimeout would cut off progressing downloads.
-	}
-}
-
-func allowMethods(handler http.HandlerFunc, methods ...string) http.HandlerFunc {
-	allow := strings.Join(methods, ", ")
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !slices.Contains(methods, r.Method) {
-			w.Header().Set("Allow", allow)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		handler(w, r)
-	}
+	return cleanVirtual(cwd)
 }
 
 func (s *server) readCommandRequest(w http.ResponseWriter, r *http.Request, dst any) bool {

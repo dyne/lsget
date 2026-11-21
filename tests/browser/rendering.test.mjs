@@ -2,12 +2,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createServer as createHTTPServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { verifyShellUpgrade } from "./shell-upgrade.mjs";
 
 async function until(probe, description) {
   const deadline = Date.now() + 8_000;
@@ -44,11 +46,30 @@ function start(cleanups, command, args, cwd) {
 }
 
 async function browserPage(cleanups, scratch) {
+  const deniedRequests = [];
+  const proxy = createHTTPServer((request, response) => {
+    deniedRequests.push(request.url);
+    response.writeHead(403, { "Content-Type": "text/plain" });
+    response.end("Outside test listeners blocked");
+  });
+  proxy.on("connect", (request, socket) => {
+    deniedRequests.push(request.url);
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+  });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  cleanups.push(() => new Promise(resolve => {
+    proxy.close(resolve);
+    proxy.closeAllConnections();
+  }));
   const profile = join(scratch, "chrome");
   const running = start(cleanups, process.env.CHROME_BIN || "google-chrome", [
     ...(process.env.LSGET_TEST_HEADFUL
       ? ["--ozone-platform=x11", "--force-renderer-accessibility", "--window-size=1280,900"] : ["--headless"]),
     "--no-first-run", "--disable-background-networking",
+    "--proxy-server=http://127.0.0.1:" + proxy.address().port,
+    "--proxy-bypass-list=127.0.0.1",
+    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
     "--user-data-dir=" + profile, "--remote-debugging-port=0", "about:blank",
   ], scratch);
   const endpoint = await until(async () => {
@@ -115,6 +136,7 @@ async function browserPage(cleanups, scratch) {
     },
     evaluate,
     send,
+    deniedRequests,
     policyMessages,
     wait(expression) {
       return until(() => evaluate(expression), expression);
@@ -189,6 +211,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     } finally {
       await rm(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
+    t.diagnostic("Owned browser and server processes settled, local listeners closed, and scratch removed.");
   });
   const site = join(scratch, "served");
   const { file, punctuation } = await fixture(site);
@@ -196,7 +219,6 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
   const workB = join(scratch, "work-b");
   await mkdir(workA);
   await mkdir(workB);
-  await writeFile(join(workA, "index.html"), "<title>Local A</title>");
   await writeFile(join(workB, "index.html"), "<title>Local B</title>");
   const mode = process.env.LSGET_TEST_CSP || "enforce";
   const origin = await startServer(cleanups, binary, site, workA, mode);
@@ -229,6 +251,13 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       field.form.requestSubmit();
     }, input);
   }
+
+  await t.test("Chrome can reach only the local test listeners", async () => {
+    const outside = "http://outside.lsget-test.invalid/network-probe";
+    await page.open(outside);
+    await page.wait('document.body?.textContent === "Outside test listeners blocked"');
+    assert.ok(page.deniedRequests.includes(outside));
+  });
 
   await t.test("Markdown renders only supported elements and navigation targets", async () => {
     await page.open(origin + "/docs");
@@ -787,6 +816,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
   });
 
   await t.test("Embedded shell, explicit override, and publishing use their intended responses", async () => {
+    assert.deepEqual(await readdir(workA), []);
     const second = await startServer(cleanups, binary, site, workB, mode);
     for (const url of [origin, second]) {
       const response = await fetch(url);
@@ -814,8 +844,15 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       assert.equal(response.headers.get("Content-Security-Policy"), null);
       assert.equal(response.headers.get("Content-Security-Policy-Report-Only"), null);
     }
-    t.diagnostic("Two default launches served the embedded shell. An explicit template won only on the shell route. Published HTML and the no-JS listing had no shell CSP.");
+    t.diagnostic("The first binary served the embedded shell from an empty working directory. The default and explicit override in the second working directory preserved publishing and no-JS handling.");
   });
+
+  if (process.env.LSGET_PREVIOUS_SHELL_BINARY) {
+    await t.test("A cached shell and modules cannot mix between binary releases", async t => {
+      const previous = await startServer(cleanups, resolve(process.env.LSGET_PREVIOUS_SHELL_BINARY), site, workA, mode);
+      await verifyShellUpgrade(t, cleanups, page, previous, origin);
+    });
+  }
 
   await t.test("Chrome reports the tighter Datastar policy during the trial", async () => {
     const messages = [...new Set(page.policyMessages.filter((message) => /Content Security Policy/u.test(message)))];
