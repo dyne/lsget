@@ -85,6 +85,18 @@ function rememberCommand(command) {
 function setDirectory(path) {
   cwd = path;
   prompt.textContent = "guest@browser:" + path + "$ ";
+  document.getElementById("files-view")?.setAttribute("href", directoryURL(path, "files"));
+  document.getElementById("terminal-view")?.setAttribute("href", directoryURL(path, "terminal"));
+}
+
+function directoryURL(path, view = new URLSearchParams(window.location.search).get("view")) {
+  const url = new URL(terminalView.pathURL(path), window.location.origin);
+  url.search = window.location.search;
+  url.searchParams.delete("file");
+  url.searchParams.delete("nojs");
+  if (view === "files" || view === "terminal") url.searchParams.set("view", view);
+  else url.searchParams.delete("view");
+  return url.pathname + url.search;
 }
 
 function clearCompletion() {
@@ -259,7 +271,7 @@ async function runCommand(command, listAfterCd = false) {
       terminalView.readme(panel, response);
       if (response.cwd !== cwd) {
         setDirectory(response.cwd);
-        window.history.pushState({ cwd }, "", terminalView.pathURL(cwd));
+        window.history.pushState({ cwd }, "", directoryURL(cwd));
         announce("Directory " + cwd + ".");
       }
       if (listAfterCd) await listDirectory(cwd, request);

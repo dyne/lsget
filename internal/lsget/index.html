@@ -7,7 +7,7 @@
 
     <!-- No-JS fallback: redirect to plain HTML version -->
     <noscript>
-      <meta http-equiv="refresh" content="0; url=?nojs=1" />
+      <meta http-equiv="refresh" content="0; url={{NOJS_URL}}" />
     </noscript>
 
     <script nonce="{{CSP_NONCE}}" src="{{SHELL_ASSET_PATH}}marked.min.js"></script>
@@ -122,11 +122,15 @@
         gap: 0.25rem;
         overflow-y: auto;
       }
+      .view-switch { display: flex; flex-wrap: wrap; gap: .25rem .5em; font-size: .875em; }
+      .view-switch a { display: inline-flex; align-items: center; min-height: 44px; padding-block: .5rem; color: var(--ctp-frappe-lavender); text-underline-offset: .2em; }
+      .view-switch a[aria-current] { font-weight: 700; text-decoration-thickness: 2px; }
+      .view-switch a:focus-visible { outline: 3px solid var(--ctp-frappe-yellow); outline-offset: -3px; }
       #transcript {
         padding: 0.2rem;
         overflow: auto;
         flex: 1;
-        min-block-size: 2em;
+        min-block-size: 1em;
         text-shadow:
           0 0 2px currentColor,
           0 0 6px currentColor;
@@ -548,6 +552,10 @@
     >
       <section class="terminal" aria-label="Terminal">
         <div id="screen" class="screen">
+          <nav class="view-switch" aria-label="Directory view">
+            <a id="files-view" href="{{FILES_VIEW_URL}}">Files</a>
+            <a id="terminal-view" href="{{TERMINAL_VIEW_URL}}" aria-current="page">Terminal</a>
+          </nav>
           <div id="transcript" role="region" aria-label="Terminal output" tabindex="0"></div>
           <form id="command-form">
             <div class="command-row">
