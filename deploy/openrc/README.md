@@ -16,7 +16,7 @@ This directory contains OpenRC init scripts and installation files for deploying
 
 1. Build or download the lsget binary:
    ```sh
-   go build -o lsget .
+   go build -o lsget ./cmd/lsget
    ```
 
 2. Install the binary system-wide:

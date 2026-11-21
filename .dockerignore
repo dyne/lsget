@@ -31,7 +31,7 @@ Taskfile.yml
 air.toml
 
 # Test files
-*_test.go
+**/*_test.go
 
 # Temporary files
 tmp/

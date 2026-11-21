@@ -8,11 +8,11 @@ tasks:
     silent: true
 
   dev:
-    desc: "Start live‑reloading dev server (rebuild on change to main.go)"
+    desc: Rebuild and restart the development server when Go source changes
     env:
-      LSGET_DEV_TEMPLATE: "{{.TASKFILE_DIR}}/index.html"
+      LSGET_DEV_TEMPLATE: "{{.TASKFILE_DIR}}/internal/lsget/index.html"
     cmds:
-      - go tool air # Air will watch *.go by default, thus including main.go
+      - go tool air --build.cmd "go build -o ./tmp/main ./cmd/lsget"
     interactive: true
   lint:
     desc: Run golangci-lint on the codebase
@@ -27,7 +27,7 @@ tasks:
       - rm -f lsget
   lsget:
     cmds:
-      - go build -o lsget ./...
+      - go build -o lsget ./cmd/lsget
   vendor:
     desc: Refresh pinned browser bundles and license notices
     cmds:

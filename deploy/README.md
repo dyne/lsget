@@ -13,7 +13,7 @@ This directory contains deployment configurations for running lsget as a system 
 
 ```bash
 # Build and install binary
-go build -o lsget .
+go build -o lsget ./cmd/lsget
 sudo cp lsget /usr/local/bin/
 sudo chmod +x /usr/local/bin/lsget
 
@@ -32,7 +32,7 @@ sudo systemctl start lsget.service
 
 ```sh
 # Build and install binary
-go build -o lsget .
+go build -o lsget ./cmd/lsget
 cp lsget /usr/local/bin/
 chmod +x /usr/local/bin/lsget
 

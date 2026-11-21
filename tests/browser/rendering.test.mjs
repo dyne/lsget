@@ -892,7 +892,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     const icon = await fetch(custom + data.favicon);
     assert.equal(icon.status, 200);
     assert.equal(icon.headers.get("Content-Type"), "image/png");
-    assert.deepEqual(Buffer.from(await icon.arrayBuffer()), await readFile(new URL("../../assets/favicon.png", import.meta.url)));
+    assert.deepEqual(Buffer.from(await icon.arrayBuffer()), await readFile(new URL("../../internal/lsget/assets/favicon.png", import.meta.url)));
     assert.equal(previewRequests, 0, "The metadata response must not fetch the preview image");
     assert.deepEqual(await readdir(workA), []);
   });
