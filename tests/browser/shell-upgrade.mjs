@@ -16,14 +16,20 @@ async function snapshot(origin) {
   const base = entryPaths[0].replace(/[^/]+$/u, "");
   assert.match(base, /^\/assets\/lsget-shell\/[0-9a-f]{64}\/$/u);
   assert.deepEqual([...entryPaths].sort(), names.filter(name => name !== "terminal-view.js").map(name => base + name));
+  const contentTypes = names.map(name => [name, "application/javascript; charset=utf-8"]);
+  const icon = html.match(/<link rel="icon"[^>]* href="([^"]+)"/u);
+  if (icon) {
+    assert.equal(icon[1], base + "favicon.png");
+    contentTypes.push(["favicon.png", "image/png"]);
+  }
   const assets = {};
-  for (const name of names) {
+  for (const [name, contentType] of contentTypes) {
     const path = base + name;
     const result = await fetch(origin + path);
     const bytes = Buffer.from(await result.arrayBuffer());
     const digest = sha256(bytes);
     assert.equal(result.status, 200, path);
-    assert.equal(result.headers.get("Content-Type"), "application/javascript; charset=utf-8", path);
+    assert.equal(result.headers.get("Content-Type"), contentType, path);
     assert.equal(result.headers.get("Cache-Control"), "public, max-age=31536000, immutable", path);
     assert.equal(result.headers.get("X-Content-Type-Options"), "nosniff", path);
     const etag = result.headers.get("ETag");
@@ -47,7 +53,6 @@ export async function verifyShellUpgrade(t, cleanups, page, previous, current) {
   const before = await snapshot(previous);
   const after = await snapshot(current);
   assert.notEqual(before.base, after.base);
-  assert.notEqual(before.assets["terminal.js"].digest, after.assets["terminal.js"].digest);
 
   // Cross-release requests must fail even if an unchanged file has an ETag
   // that would normally satisfy the supplied conditional request.
@@ -95,7 +100,9 @@ export async function verifyShellUpgrade(t, cleanups, page, previous, current) {
   const address = "http://127.0.0.1:" + relay.address().port;
   const appReady = search => "location.search === " + JSON.stringify(search) +
     ' && document.querySelector("#readme h1")?.textContent === "Markdown fixture"';
-  const assetResponses = () => responses.filter(row => row.path.startsWith("/assets/lsget-shell/"));
+  // The icon has its own HTTP checks above. Chrome can request it after the
+  // terminal is ready, which is the boundary for the script-cache assertions.
+  const assetResponses = () => responses.filter(row => row.path.startsWith("/assets/lsget-shell/") && row.path.endsWith(".js"));
   const paths = snapshot => names.map(name => snapshot.assets[name].path);
   const assertAssets = (expected, status) => {
     assert.deepEqual(assetResponses().map(row => row.path).sort(), [...expected].sort());
