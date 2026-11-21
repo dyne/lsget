@@ -41,7 +41,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		if filesView || errors.Is(err, errHiddenPath) || !errors.Is(err, fs.ErrNotExist) {
 			http.NotFound(w, r)
 		} else {
-			s.serveMainIndex(w, "/", query)
+			s.serveMainIndex(w, "/", query, false)
 		}
 		return
 	}
@@ -71,7 +71,7 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		serveNoJSDirectory(r.Context(), w, root, requestPath, viewQuery, publicBase,
 			directoryViewURL(requestPath, query, "terminal"), s.directoryCanonicalURL(requestPath))
 	} else {
-		s.serveMainIndex(w, requestPath, query)
+		s.serveMainIndex(w, requestPath, query, query.Get("view") != "terminal")
 	}
 }
 
@@ -95,9 +95,9 @@ func directoryViewURL(virtualPath string, query url.Values, view string) string 
 	return urlEscapeVirtual(virtualPath) + directoryViewQuery(query, view)
 }
 
-func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string, query url.Values) {
+func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string, query url.Values, autoView bool) {
 	htmlContent := embeddedIndex
-	var nonce string
+	var nonce, icon, assetsOpen, assetsClose string
 	var metadata []byte
 	if s.devTemplate != "" {
 		var err error
@@ -114,6 +114,11 @@ func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string, query
 			return
 		}
 		nonce = rand.Text()
+		icon = `<link rel="icon" type="image/png" sizes="32x32" href="` + shellAssetPath + shellFaviconName + `" />`
+		if autoView {
+			// Resources inside a template are inert until the browser selects Terminal.
+			assetsOpen, assetsClose = `<template id="terminal-assets">`, `</template>`
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		s.setShellCSP(w, nonce)
 	}
@@ -123,6 +128,9 @@ func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string, query
 		"{{FILES_VIEW_URL}}", html.EscapeString(directoryViewURL(initialPath, query, "files")),
 		"{{TERMINAL_VIEW_URL}}", html.EscapeString(directoryViewURL(initialPath, query, "terminal")),
 		"{{NOJS_URL}}", html.EscapeString(directoryViewURL(initialPath, query, "nojs")),
+		"{{SHELL_ICON}}", icon,
+		"{{TERMINAL_ASSETS_OPEN}}", assetsOpen,
+		"{{TERMINAL_ASSETS_CLOSE}}", assetsClose,
 	).Replace(string(processedHTML)))
 	if metadata != nil {
 		processedHTML = bytes.Replace(processedHTML, []byte("<title>"+defaultSiteTitle+"</title>"), metadata, 1)
@@ -135,14 +143,11 @@ func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string, query
 
 func (s *server) setShellCSP(w http.ResponseWriter, nonce string) {
 	source := "'nonce-" + nonce + "'"
-	script := "script-src " + source
 	header := "Content-Security-Policy-Report-Only"
 	if !s.shellCSPReportOnly {
 		header = "Content-Security-Policy"
-		// Vendored Datastar compiles application-owned data-* expressions with Function.
-		script += " 'unsafe-eval'"
 	}
-	w.Header().Set(header, "default-src 'none'; "+script+
+	w.Header().Set(header, "default-src 'none'; script-src "+source+
 		"; script-src-attr 'none'; style-src "+source+
 		"; style-src-attr 'none'; connect-src 'self'; img-src http: https:"+
 		"; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'self'")
@@ -215,6 +220,7 @@ func serveNoJSDirectory(ctx context.Context, w http.ResponseWriter, root *os.Roo
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Index of %s</title>
+<link rel="icon" type="image/png" sizes="32x32" href="%s">
 %s
 <style>
 :root { color-scheme: dark; background: #303446; color: #c6d0f5; font: 1rem/1.5 system-ui, sans-serif; }
@@ -254,7 +260,7 @@ label { display: block; padding-top: .5rem; }
 </style>
 </head>
 <body>
-`, escapedVirtualPath, canonical)
+`, escapedVirtualPath, shellFaviconDataURL, canonical)
 
 	_, _ = io.WriteString(&page, `<header><nav aria-label="Folder navigation">`)
 	if virtualPath != "/" {

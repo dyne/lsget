@@ -37,6 +37,8 @@ let selectedSuggestion = -1;
 let composing = false;
 let readmeOpen = false;
 let readmeClosing = false;
+let readmeRequest;
+let readmeLoaded = false;
 
 function focusInput() {
   input.focus({ preventScroll: true });
@@ -98,6 +100,13 @@ function rememberCommand(command) {
 }
 
 function setDirectory(path) {
+  if (path !== cwd) {
+    readmeRequest?.abort();
+    readmeRequest = undefined;
+    readmeLoaded = false;
+    panel.replaceChildren();
+    panel.scrollTop = 0;
+  }
   cwd = path;
   prompt.textContent = "guest@browser:" + path + "$ ";
   document.getElementById("files-view")?.setAttribute("href", directoryURL(path, "files"));
@@ -189,10 +198,12 @@ function toggleReadme() {
     window.history.pushState({ cwd, readme: true }, "");
   }
   updateReadme(true);
+  void loadReadme();
 }
 
 async function requestJSON(endpoint, directory, request, body) {
   const query = new URLSearchParams({ cwd: directory });
+  if (endpoint === "exec") query.set("readme", "0");
   const response = await fetch("/api/" + endpoint + "?" + query, {
     signal: request.signal,
     cache: "no-store",
@@ -220,12 +231,8 @@ async function loadDirectory() {
   const request = new AbortController();
   directoryRequest = request;
   directoryError.hidden = true;
-  const directory = cwd;
   try {
-    const response = await requestJSON("config", directory, request);
-    if (request.signal.aborted) return;
-    terminalView.readme(panel, response);
-    await listDirectory(directory, request);
+    await listDirectory(cwd, request);
   } catch (error) {
     if (request.signal.aborted) return;
     directoryErrorMessage.textContent = "Could not load this directory (" + error.message + ").";
@@ -234,6 +241,45 @@ async function loadDirectory() {
   } finally {
     if (directoryRequest === request) directoryRequest = undefined;
   }
+}
+
+function readmeNotice(text) {
+  const notice = document.createElement("p");
+  notice.className = "readme-notice";
+  notice.setAttribute("role", "status");
+  notice.textContent = text;
+  panel.replaceChildren(notice);
+}
+
+async function loadReadme() {
+  if (readmeLoaded || readmeRequest) return;
+  const request = new AbortController();
+  readmeRequest = request;
+  readmeNotice("Loading README…");
+  try {
+    const response = await requestJSON("config", cwd, request);
+    if (request.signal.aborted) return;
+    await terminalView.readme(panel, response, request.signal);
+    if (!request.signal.aborted) readmeLoaded = true;
+  } catch {
+    if (request.signal.aborted) return;
+    readmeNotice("Could not load the README.");
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "terminal-control";
+    retry.textContent = "Retry README";
+    retry.addEventListener("click", () => {
+      panel.focus({ preventScroll: true });
+      void loadReadme();
+    });
+    panel.append(retry);
+  } finally {
+    if (readmeRequest === request) readmeRequest = undefined;
+  }
+}
+
+function loadVisibleReadme() {
+  if (!compactReader.matches || readmeOpen) void loadReadme();
 }
 
 async function copyURL(url, request) {
@@ -304,12 +350,12 @@ async function runCommand(command, listAfterCd = false) {
       }
       return;
     }
-    if (typeof response.cwd === "string" && typeof response.readme === "string") {
-      directoryRequest?.abort();
-      directoryError.hidden = true;
-      clearCompletion();
+    if (typeof response.cwd === "string") {
       const changedDirectory = response.cwd !== cwd;
       if (changedDirectory) {
+        directoryRequest?.abort();
+        directoryError.hidden = true;
+        clearCompletion();
         updateReadme();
         setDirectory(response.cwd);
         // A command may finish while the reader is open. Replace its entry so
@@ -321,9 +367,8 @@ async function runCommand(command, listAfterCd = false) {
         }
         announce("Directory " + cwd + ".");
       }
-      terminalView.readme(panel, response);
-      if (changedDirectory) panel.scrollTop = 0;
-      if (listAfterCd) await listDirectory(cwd, request);
+      if (listAfterCd) void loadDirectory();
+      if (changedDirectory) loadVisibleReadme();
     }
   } catch (error) {
     if (!request.signal.aborted) {
@@ -494,14 +539,14 @@ transcript.addEventListener("click", event => {
   event.preventDefault();
 });
 
-// Datastar invokes this action from the shell's data-on-click attribute.
-window.terminalView = { toggleReadme };
+readmeToggle.addEventListener("click", toggleReadme);
 compactReader.addEventListener("change", () => {
   if (!compactReader.matches && readmeOpen) {
     closeReadme();
   } else {
     updateReadme();
   }
+  loadVisibleReadme();
 });
 layout.addEventListener("keydown", event => {
   if (event.key === "Escape" && readmeOpen) {
@@ -512,6 +557,7 @@ layout.addEventListener("keydown", event => {
 retryDirectory.addEventListener("click", event => {
   focusNavigationResult(event);
   void loadDirectory();
+  loadVisibleReadme();
 });
 
 window.addEventListener("popstate", event => {
@@ -519,13 +565,16 @@ window.addEventListener("popstate", event => {
   const sameDirectory = path === cwd;
   readmeClosing = false;
   updateReadme(sameDirectory && event.state?.readme === true);
-  if (sameDirectory) return;
+  if (sameDirectory) {
+    loadVisibleReadme();
+    return;
+  }
   commandRequest?.abort();
   clearCompletion();
-  panel.replaceChildren();
   setDirectory(path);
   announce("Directory " + cwd + ".");
   void loadDirectory();
+  loadVisibleReadme();
 });
 
 setDirectory(cwd);
@@ -534,3 +583,4 @@ window.history.replaceState({ cwd }, "", terminalView.pathURL(cwd) + window.loca
 appendTranscript(terminalView.appendHelp);
 if (!touchScreen.matches) focusInput();
 void loadDirectory();
+loadVisibleReadme();

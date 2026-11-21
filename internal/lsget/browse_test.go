@@ -256,7 +256,8 @@ func TestFilesNavigationOutputBudget(t *testing.T) {
 			t.Errorf("bounded page lost %q", want[:min(len(want), 80)])
 		}
 	}
-	if strings.Count(body, "<li") != strings.Count(body, "</li>") || strings.Count(body, "<details") != strings.Count(body, "</details>") {
+	items := strings.Count(body, "<li>") + strings.Count(body, "<li ")
+	if items != strings.Count(body, "</li>") || strings.Count(body, "<details") != strings.Count(body, "</details>") {
 		t.Error("bounded navigation left partial rows or breadcrumbs")
 	}
 }
@@ -298,7 +299,8 @@ func TestFilesDirectoryBoundedRows(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(body, truncationNote) {
 		t.Fatal("large directory must report truncation")
 	}
-	if strings.Count(body, "<li") != strings.Count(body, "</li>") || !strings.HasSuffix(body, "</html>\n") {
+	items := strings.Count(body, "<li>") + strings.Count(body, "<li ")
+	if items != strings.Count(body, "</li>") || !strings.HasSuffix(body, "</html>\n") {
 		t.Error("truncated listing has incomplete markup")
 	}
 	start := strings.Index(body, `<ul class="files"`)

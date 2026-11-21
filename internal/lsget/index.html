@@ -10,9 +10,28 @@
       <meta http-equiv="refresh" content="0; url={{NOJS_URL}}" />
     </noscript>
 
-    <script nonce="{{CSP_NONCE}}" src="{{SHELL_ASSET_PATH}}marked.min.js"></script>
-    <script nonce="{{CSP_NONCE}}" type="module" src="{{SHELL_ASSET_PATH}}terminal.js"></script>
-    <script nonce="{{CSP_NONCE}}" type="module" src="{{SHELL_ASSET_PATH}}datastar.js"></script>
+    {{TERMINAL_ASSETS_OPEN}}
+    {{SHELL_ICON}}
+    <script id="terminal-script" nonce="{{CSP_NONCE}}" type="module" src="{{SHELL_ASSET_PATH}}terminal.js"></script>
+    {{TERMINAL_ASSETS_CLOSE}}
+    <script nonce="{{CSP_NONCE}}" data-files-url="{{FILES_VIEW_URL}}">
+      (() => {
+        const assets = document.getElementById("terminal-assets");
+        if (!assets) return;
+        const compactTouch = matchMedia(
+          "(any-pointer: coarse) and (max-width: 768px), " +
+          "(any-pointer: coarse) and (orientation: landscape) and (max-height: 450px)",
+        );
+        if (compactTouch.matches) {
+          location.replace(document.currentScript.dataset.filesUrl + location.hash);
+          return;
+        }
+        // Terminal needs the DOM.
+        document.addEventListener("DOMContentLoaded", () => {
+          document.head.append(document.importNode(assets.content, true));
+        }, { once: true });
+      })();
+    </script>
 
     <style nonce="{{CSP_NONCE}}">
       :root {
@@ -431,7 +450,7 @@
         outline-color: var(--ctp-latte-blue);
         outline-offset: -2px;
       }
-      .readme a:focus-visible {
+      .readme :is(a, button):focus-visible {
         outline-offset: 2px;
       }
       .mobile-toggle[aria-expanded="true"]:focus-visible {
@@ -636,7 +655,6 @@
         class="mobile-toggle"
         id="readme-toggle"
         type="button"
-        data-on-click="terminalView.toggleReadme()"
         aria-controls="readme"
         aria-expanded="false"
         aria-label="Show README"

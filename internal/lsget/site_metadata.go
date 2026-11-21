@@ -25,15 +25,13 @@ var siteMetadataTemplate = template.Must(template.New("site metadata").Parse(`<t
     <meta property="og:type" content="website" />{{if .CanonicalURL}}
     <link rel="canonical" href="{{.CanonicalURL}}" />
     <meta property="og:url" content="{{.CanonicalURL}}" />{{end}}{{if .PreviewImage}}
-    <meta property="og:image" content="{{.PreviewImage}}" />{{end}}
-    <link rel="icon" type="image/png" sizes="32x32" href="{{.IconURL}}" />`))
+    <meta property="og:image" content="{{.PreviewImage}}" />{{end}}`))
 
 func (s *server) renderSiteMetadata(initialPath string) ([]byte, error) {
 	data := struct {
 		siteMetadata
 		CanonicalURL string
-		IconURL      string
-	}{siteMetadata: s.siteMetadata, IconURL: shellAssetPath + shellFaviconName}
+	}{siteMetadata: s.siteMetadata}
 	if data.Title == "" {
 		data.Title = defaultSiteTitle
 	}
