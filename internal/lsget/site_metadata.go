@@ -40,14 +40,19 @@ func (s *server) renderSiteMetadata(initialPath string) ([]byte, error) {
 	if data.Description == "" {
 		data.Description = "Browse and download files with lsget."
 	}
-	if s.baseURL != "" {
-		if base, err := sitemapBaseURL(s.baseURL); err == nil {
-			data.CanonicalURL = base + urlEscapeVirtual(initialPath)
-		}
-	}
+	data.CanonicalURL = s.directoryCanonicalURL(initialPath)
 	var out bytes.Buffer
 	err := siteMetadataTemplate.Execute(&out, data)
 	return out.Bytes(), err
+}
+
+func (s *server) directoryCanonicalURL(virtualPath string) string {
+	if s.baseURL != "" {
+		if base, err := sitemapBaseURL(s.baseURL); err == nil {
+			return base + urlEscapeVirtual(virtualPath)
+		}
+	}
+	return ""
 }
 
 func parsePreviewImageURL(raw string) (string, error) {

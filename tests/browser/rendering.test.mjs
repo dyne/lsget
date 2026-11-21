@@ -746,6 +746,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
               touchSize: complete.getBoundingClientRect().height >= 44,
             };
           });
+          if (!geometry.visible) t.diagnostic(JSON.stringify(await page.evaluate(() => Object.fromEntries(["command", "complete-command", "completions", "completion-option-0"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, { top: r.top, bottom: r.bottom, left: r.left, right: r.right }]; })))));
           assert.deepEqual(geometry, {
             width, height: 800, size, below: true, visible: true, wrap: true,
             reducedMotion: true, textKeyboard: true, touchSize: mobile || size === 32,
@@ -813,6 +814,274 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       await page.send("Emulation.setScriptExecutionDisabled", { value: false });
     }
     t.diagnostic("The browser followed the noscript refresh for both plain listings and Back restored the first listing.");
+  });
+
+  await t.test("Files rows reflow with JavaScript disabled and enlarged text", async () => {
+    const longName = "A long shared filename with <angle> & quoted text that wraps on a phone.txt";
+    await writeFile(join(site, "docs", longName), "Literal filename fixture\n");
+    const measurements = [];
+    await page.send("Emulation.setScriptExecutionDisabled", { value: true });
+    try {
+      for (const width of [320, 390]) {
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height: width === 320 ? 640 : 844, deviceScaleFactor: 1, mobile: true });
+        for (const fontSize of [16, 32]) {
+          await page.send("Page.setFontSizes", { fontSizes: { standard: fontSize, fixed: fontSize } });
+          await page.open(origin + "/docs?view=files");
+          await page.wait('document.querySelector(".files") && document.querySelector("h1")?.textContent === "Index of /docs"');
+          const geometry = await page.evaluate(() => {
+            const rect = element => {
+              const { x, y, width, height } = element.getBoundingClientRect();
+              return { x, y, width, height };
+            };
+            return {
+              viewport: innerWidth, content: document.documentElement.scrollWidth,
+              rows: Array.from(document.querySelectorAll(".file-row"), rect),
+              up: rect(document.querySelector(".up")),
+              names: Array.from(document.querySelectorAll(".file-row"), a => a.textContent),
+              size: getComputedStyle(document.documentElement).fontSize,
+              scripts: document.scripts.length,
+            };
+          });
+          assert.equal(geometry.viewport, width);
+          assert.ok(geometry.content <= width, JSON.stringify(geometry));
+          assert.ok(geometry.rows.length >= 3);
+          assert.ok(geometry.rows.every(row => row.height >= 44 && row.x >= 0 && row.x + row.width <= width));
+          assert.ok(geometry.up.y >= 0 && geometry.up.y + geometry.up.height < 150, JSON.stringify(geometry));
+          assert.ok(geometry.names.includes(longName));
+          assert.equal(geometry.size, fontSize + "px");
+          assert.equal(geometry.scripts, 0);
+          await key("Tab", 9);
+          assert.equal(await page.evaluate("document.activeElement.className"), "up");
+          await key("Tab", 9);
+          assert.equal(await page.evaluate("document.activeElement.textContent"), "Files");
+          await key("Tab", 9);
+          assert.equal(await page.evaluate("document.activeElement.textContent"), "Terminal");
+          await key("Tab", 9);
+          assert.equal(await page.evaluate("document.activeElement.textContent"), "Shared files");
+          await key("Tab", 9);
+          assert.equal(await page.evaluate("document.activeElement.className"), "file-row");
+          const label = `files-${width}-${fontSize}`;
+          measurements.push({ label, ...geometry });
+          if (process.env.LSGET_SCREENSHOTS) {
+            const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+            await writeFile(join(process.env.LSGET_SCREENSHOTS, label + ".png"), Buffer.from(data, "base64"));
+          }
+          await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
+          assert.equal(await page.evaluate("document.querySelector('.up').getBoundingClientRect().top >= 0"), true);
+          await page.evaluate("document.querySelector('.up').focus()");
+          await key("Enter", 13);
+          await page.wait('location.pathname === "/" && location.search === "?view=files"');
+        }
+      }
+      const deepPath = "/" + Array.from({ length: 12 }, (_, i) => "deep-shared-folder-" + i).join("/");
+      await mkdir(join(site, deepPath), { recursive: true });
+      await writeFile(join(site, deepPath, "reachable.txt"), "Deep shared file\n");
+      await page.send("Emulation.setDeviceMetricsOverride", { width: 320, height: 640, deviceScaleFactor: 1, mobile: true });
+      await page.send("Page.setFontSizes", { fontSizes: { standard: 32, fixed: 32 } });
+      await page.open(origin + deepPath + "?view=files");
+      await page.wait('document.querySelector(".file-row")?.textContent === "reachable.txt"');
+      await page.evaluate("document.querySelector('.file-row').scrollIntoView({block:'center'})");
+      const deep = await page.evaluate(() => {
+        const row = document.querySelector('.file-row').getBoundingClientRect();
+        const header = document.querySelector('header').getBoundingClientRect();
+        return { rowTop: row.top, rowBottom: row.bottom, headerBottom: header.bottom, height: innerHeight, width: innerWidth, content: document.documentElement.scrollWidth };
+      });
+      assert.ok(deep.rowTop >= deep.headerBottom && deep.rowBottom <= deep.height, JSON.stringify(deep));
+      assert.equal(deep.content, deep.width);
+      measurements.push({ label: "files-deep-320-32", ...deep });
+      if (process.env.LSGET_SCREENSHOTS) {
+        const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "files-deep-320-32.png"), Buffer.from(data, "base64"));
+      }
+      if (process.env.LSGET_SCREENSHOTS) {
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "files-geometry.json"), JSON.stringify(measurements, null, 2));
+      }
+      t.diagnostic(JSON.stringify(measurements.map(({ label, viewport, content, size, rows }) => ({ label, viewport, content, size, rows: rows?.length }))));
+    } finally {
+      await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+      await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 16 } });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+      await rm(join(site, "docs", longName));
+    }
+  });
+
+  await t.test("Files actions support touch, keyboard, downloads and selectable share URLs without scripts", async () => {
+    const name = 'résumé # <&".bin';
+    const bytes = Buffer.from([0, 1, 2, 3, 255, 13, 10]);
+    await mkdir(join(site, "actions", "folder"), { recursive: true });
+    await writeFile(join(site, "actions", name), bytes);
+    const downloads = join(scratch, "files-downloads");
+    await mkdir(downloads);
+    await page.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await page.send("Emulation.setScriptExecutionDisabled", { value: true });
+    try {
+      await page.open(origin + "/actions?view=files");
+      await page.wait('document.querySelector("h1")?.textContent === "Index of /actions"');
+      const point = await page.evaluate(() => {
+        const { x, y, width, height } = document.querySelector("summary").getBoundingClientRect();
+        return { x: x + width / 2, y: y + height / 2 };
+      });
+      await page.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+      await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await page.wait('document.querySelector("details").open');
+      await page.evaluate('document.querySelector("summary").focus()');
+      await key("Enter", 13);
+      assert.equal(await page.evaluate('document.querySelector("details").open'), false);
+      await key("Enter", 13);
+      await key("Tab", 9);
+      assert.equal(await page.evaluate("document.activeElement.className"), "download");
+      const focus = await page.evaluate("getComputedStyle(document.activeElement).outlineStyle");
+      assert.equal(focus, "solid");
+      await key("Tab", 9);
+      assert.equal(await page.evaluate("document.activeElement.className"), "share-url");
+      await key("a", 65, 2);
+      const share = await page.evaluate(() => {
+        const field = document.activeElement;
+        return { value: field.value, readOnly: field.readOnly, selected: field.value.slice(field.selectionStart, field.selectionEnd), width: document.documentElement.scrollWidth };
+      });
+      assert.equal(share.value, origin + "/actions/" + encodeURIComponent(name).replaceAll("%26", "&"));
+      assert.equal(share.readOnly, true);
+      assert.equal(share.selected, share.value);
+      assert.equal(share.width, 390);
+      const { nodes } = await page.send("Accessibility.getFullAXTree");
+      for (const accessibleName of ["Actions for " + name, "Download " + name, "Share URL for " + name]) {
+        assert.ok(nodes.some(node => node.name?.value === accessibleName), accessibleName);
+      }
+      if (process.env.LSGET_SCREENSHOTS) {
+        const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "files-actions-390.png"), Buffer.from(data, "base64"));
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "files-actions.json"), JSON.stringify({ name, share, focus }, null, 2));
+      }
+      await page.evaluate('document.querySelector(".download").focus()');
+      await key("Enter", 13);
+      let savedName;
+      const saved = await until(async () => {
+        const entries = await readdir(downloads);
+        // Chrome may replace platform-sensitive characters in the suggested name.
+        if (entries.length !== 1 || entries[0].endsWith(".crdownload")) return;
+        savedName = entries[0];
+        return readFile(join(downloads, savedName));
+      }, "Files attachment download");
+      assert.deepEqual(saved, bytes);
+      if (process.env.LSGET_SCREENSHOTS) {
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "files-actions.json"), JSON.stringify({ name, savedName, share, focus, downloadedBytes: saved.length }, null, 2));
+      }
+      t.diagnostic("Native details opened by touch/Enter, Download focus and AX names verified, readonly share URL selected, exact binary bytes downloaded without page scripts; Chrome saved as " + savedName);
+    } finally {
+      await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+    }
+  });
+
+  await t.test("Files reverse Tab keeps action controls below persistent Up", async () => {
+    await mkdir(join(site, "reverse-focus"));
+    for (let i = 0; i < 20; i++) await writeFile(join(site, "reverse-focus", `file-${String(i).padStart(2, "0")}.txt`), "Focus fixture\n");
+    await page.send("Emulation.setScriptExecutionDisabled", { value: true });
+    const measurements = [];
+    try {
+      for (const [width, fontSize] of [[390, 16], [320, 32]]) {
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: true });
+        await page.send("Page.setFontSizes", { fontSizes: { standard: fontSize, fixed: fontSize } });
+        await page.open(origin + "/reverse-focus?view=files");
+        await page.wait('document.querySelector("h1")?.textContent === "Index of /reverse-focus"');
+        await page.evaluate(() => {
+          const details = document.querySelectorAll("details")[10];
+          details.open = true;
+          const input = details.querySelector("input");
+          input.focus();
+          window.scrollTo(0, input.getBoundingClientRect().top + scrollY - 8);
+        });
+        for (const expected of ["download", "", "file-row"]) {
+          await key("Tab", 9, 8);
+          const focus = await page.evaluate(() => {
+            const current = document.activeElement;
+            const box = current.getBoundingClientRect();
+            return { tag: current.tagName, className: current.className, top: box.top, bottom: box.bottom, headerBottom: document.querySelector("header").getBoundingClientRect().bottom, height: innerHeight };
+          });
+          measurements.push({ width, fontSize, ...focus });
+          assert.equal(focus.className, expected);
+          assert.ok(focus.top >= focus.headerBottom && focus.bottom <= focus.height, JSON.stringify(focus));
+        }
+      }
+      if (process.env.LSGET_SCREENSHOTS) await writeFile(join(process.env.LSGET_SCREENSHOTS, "files-reverse-focus.json"), JSON.stringify(measurements, null, 2));
+    } finally {
+      await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+      await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 16 } });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+    }
+  });
+
+  await t.test("Files and Terminal share explicit nested-directory links and history", async () => {
+    const parent = "/views # & <folder>";
+    const nested = parent + "/nested";
+    const escaped = path => path.split("/").map(encodeURIComponent).join("/");
+    await mkdir(join(site, nested, "child"), { recursive: true });
+    await writeFile(join(site, nested, "child", "note.txt"), "Shared view fixture\n");
+    await writeFile(join(site, "view-selected.txt"), "Reserved selector fixture\n");
+    const captures = [];
+    async function current(path, view) {
+      await page.wait(`decodeURIComponent(location.pathname) === ${JSON.stringify(path)} && new URLSearchParams(location.search).get('view') === ${JSON.stringify(view)}`);
+      await page.wait(view === "terminal" ? `document.querySelector('#command-prompt')?.textContent === ${JSON.stringify("guest@browser:" + path + "$ ")}` : `document.querySelector('h1')?.textContent === ${JSON.stringify("Index of " + path)}`);
+      assert.equal(await page.evaluate("new URLSearchParams(location.search).get('file')"), null);
+      assert.equal(await page.evaluate("new URLSearchParams(location.search).get('keep')"), "two&words");
+    }
+    async function activate(selector) {
+      await page.evaluate(selector => document.querySelector(selector).focus(), selector);
+      await key("Enter", 13);
+    }
+    async function capture(label) {
+      const links = await page.evaluate(() => Object.fromEntries(["files-view", "terminal-view"].map(id => [id, document.getElementById(id).getAttribute("href")])));
+      captures.push({ label, links });
+      if (process.env.LSGET_SCREENSHOTS) {
+        const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, label + ".png"), Buffer.from(data, "base64"));
+      }
+    }
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    try {
+      await page.open(origin + escaped(nested) + "?view=files&keep=two%26words&file=view-selected.txt");
+      await page.wait('document.querySelector(".files")');
+      await capture("views-files-390");
+      await activate("#terminal-view");
+      await current(nested, "terminal");
+      await capture("views-terminal-390");
+      await command("cd child");
+      await current(nested + "/child", "terminal");
+      assert.ok((await page.evaluate("document.getElementById('files-view').href")).includes("/child?"));
+      await page.evaluate("history.back()");
+      await current(nested, "terminal");
+      await command("cd child");
+      await current(nested + "/child", "terminal");
+      await command("cd ..");
+      await current(nested, "terminal");
+      await activate("#files-view");
+      await current(nested, "files");
+      await activate(".file-row");
+      await current(nested + "/child", "files");
+      await activate(".up");
+      await current(nested, "files");
+      await activate(".up");
+      await current(parent, "files");
+      await page.evaluate("history.back()");
+      await current(nested, "files");
+      await page.send("Emulation.setScriptExecutionDisabled", { value: true });
+      await activate("#terminal-view");
+      await page.wait("new URLSearchParams(location.search).get('nojs') === '1' && document.querySelector('.files')");
+      assert.equal(await page.evaluate("new URLSearchParams(location.search).get('keep')"), "two&words");
+      assert.equal(await page.evaluate("new URLSearchParams(location.search).get('view')"), null);
+      await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+      await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+      await activate("#terminal-view");
+      await current(nested, "terminal");
+      await capture("views-terminal-1280");
+      if (process.env.LSGET_SCREENSHOTS) await writeFile(join(process.env.LSGET_SCREENSHOTS, "view-links.json"), JSON.stringify(captures, null, 2));
+    } finally {
+      await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+    }
   });
 
   await t.test("Embedded shell, explicit override, and publishing use their intended responses", async () => {
@@ -901,7 +1170,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     await t.test("A cached shell and modules cannot mix between binary releases", async t => {
       const previous = await startServer(cleanups, resolve(process.env.LSGET_PREVIOUS_SHELL_BINARY), site, workA, mode);
       await verifyShellUpgrade(t, cleanups, page, previous, origin);
-      for (const path of ["/docs/guide/", "/docs/guide/?nojs=1", "/docs?nojs=1",
+      for (const path of ["/docs/guide/", "/docs/guide/?nojs=1",
         "/" + encodeURIComponent(file), "/?file=" + encodeURIComponent(file),
         "/assets/js/marked.min.js", "/assets/js/datastar.js"]) {
         const [before, after] = await Promise.all([fetch(previous + path), fetch(origin + path)]);
@@ -912,7 +1181,10 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
         }
         assert.deepEqual(await after.arrayBuffer(), await before.arrayBuffer(), path);
       }
-      t.diagnostic("Seven published, plain-listing, download, and stable vendor responses matched the previous binary byte for byte.");
+      const plain = await fetch(origin + "/docs?nojs=1");
+      assert.equal(plain.status, 200);
+      assert.match(await plain.text(), /class="files"/u);
+      t.diagnostic("Six published, download, and stable vendor responses matched the previous binary byte for byte; the intentionally updated no-JS listing retained its successful response.");
     });
   }
 
