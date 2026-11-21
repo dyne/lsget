@@ -1,5 +1,7 @@
 # Configuration for lsget service
 # /etc/conf.d/lsget
+# OpenRC sources this file before the service script.
+# shellcheck disable=SC2034
 
 # Listen address (IP:PORT)
 # Default: 127.0.0.1:8037
@@ -10,13 +12,16 @@ LSGET_ADDR="127.0.0.1:8037"
 # Note: This directory must be readable by the lsget user
 LSGET_DIR="/srv/ftp"
 
-# Maximum bytes printable via 'cat' command and used by completion
-# Default: 4 KiB
-LSGET_CATMAX="4092"
+# Maximum bytes printable via 'cat' command and used by completion (4 KiB).
+LSGET_CATMAX="4096"
 
-# Log file location (for statistics tracking)
-# Default: /var/log/lsget/lsget.log
-LSGET_LOGFILE="/var/log/lsget/lsget.log"
+# Access log. Defaults to lsget.log or lsget.INSTANCE.log in /var/log/lsget.
+# Set an empty value to disable the file log.
+# LSGET_LOGFILE="/var/log/lsget/lsget.log"
+
+# Optional application PID file, separate from OpenRC's supervisor PID file.
+# Use a unique path per instance if you set this.
+# LSGET_PID="/var/lib/lsget/lsget.pid"
 
 # Additional command line options (optional)
 # LSGET_OPTS=""

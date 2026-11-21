@@ -6,7 +6,7 @@ This directory contains systemd service files and installation scripts for deplo
 
 - **lsget.service** - Main systemd service unit file for single instance
 - **lsget@.service** - Template systemd service unit file for multiple instances
-- **lsget.default** - Default configuration file (installs to `/etc/default/lsget`)
+- **lsget.default** - Default configuration file for `/etc/default` or `/etc/sysconfig`
 - **lsget.logrotate** - Logrotate configuration (installs to `/etc/logrotate.d/lsget`)
 - **install.sh** - Installation script
 - **uninstall.sh** - Uninstallation script
@@ -28,40 +28,36 @@ This directory contains systemd service files and installation scripts for deplo
 
 ### Quick Install
 
-Run the installation script:
+From the checkout root, run the installer. From another directory, use its absolute path.
 
 ```bash
-cd deploy/systemd
-sudo bash install.sh
+sudo bash deploy/systemd/install.sh
 ```
 
 The script will:
 - Create a `lsget` system user and group
 - Create required directories (`/var/lib/lsget`, `/var/log/lsget`)
-- Install configuration to `/etc/default/lsget`
-- Install systemd service files
+- Install configuration at the path printed at the end of the run
+- Install systemd service files and the logrotate recipe if logrotate is available
 - Reload systemd
+
+Rerun the installer to update the units. It keeps existing environment files, logrotate configuration and state directories. Put systemd overrides in a drop-in created with `systemctl edit` so they survive unit replacement. Restart the affected services after updating their configuration or binary.
 
 ### Manual Installation
 
-If you prefer to install manually:
+For a fresh manual installation, run these commands from `deploy/systemd`.
 
 ```bash
 # Create user and group
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin lsget
+sudo useradd --system --user-group --no-create-home --home-dir /var/lib/lsget --shell /usr/sbin/nologin lsget
 
 # Create directories
-sudo mkdir -p /var/lib/lsget /var/log/lsget /etc/default
-sudo chown lsget:lsget /var/lib/lsget /var/log/lsget
+sudo install -d -m 0750 -o lsget -g lsget /var/lib/lsget /var/log/lsget
+sudo mkdir -p /etc/default
 
 # Copy files
-sudo cp lsget.default /etc/default/lsget
-sudo cp lsget.service /etc/systemd/system/
-sudo cp lsget@.service /etc/systemd/system/
-
-# Set permissions
-sudo chmod 644 /etc/systemd/system/lsget*.service
-sudo chmod 644 /etc/default/lsget
+sudo install -m 0644 lsget.default /etc/default/lsget
+sudo install -m 0644 lsget.service lsget@.service /etc/systemd/system/
 
 # Reload systemd
 sudo systemctl daemon-reload
@@ -79,7 +75,7 @@ sudo nano /etc/default/lsget
 sudo nano /etc/sysconfig/lsget
 ```
 
-**Note**: The service automatically looks for configuration in both `/etc/default/lsget` (Debian/Ubuntu style) and `/etc/sysconfig/lsget` (RHEL/Fedora style). The install script creates the file in the appropriate location for your system.
+If both files exist, settings in `/etc/sysconfig/lsget` take precedence over settings in `/etc/default/lsget`. A fresh install uses `/etc/sysconfig` where that directory exists and `/etc/default` elsewhere.
 
 ### Configuration Options
 
@@ -87,17 +83,17 @@ sudo nano /etc/sysconfig/lsget
 |----------|---------|-------------|
 | `LSGET_ADDR` | `127.0.0.1:8037` | Listen address (IP:PORT) |
 | `LSGET_DIR` | `/srv/ftp` | Root directory to serve |
-| `LSGET_CATMAX` | `262144` | Max bytes for `cat` command (256 KiB) |
-| `LSGET_PIDFILE` | `/var/lib/lsget/lsget.pid` | PID file location |
-| `LSGET_LOGFILE` | `/var/log/lsget/access.log` | Log file for statistics |
+| `LSGET_CATMAX` | `4096` | Max bytes for `cat` and completion |
+| `LSGET_PID` | Unset | Optional application PID file |
+| `LSGET_LOGFILE` | `/var/log/lsget/access.log` | Access log, or an empty value to disable it |
+
+systemd tracks each service process. If an existing configuration sets `LSGET_PIDFILE`, the service uses that path when `LSGET_PID` is absent. Use a unique path under `/var/lib/lsget` for each application PID file you configure. If an abrupt exit leaves that file behind, verify the previous process has exited before removing the stale file.
 
 ### Important Notes
 
-1. **Directory Permissions**: The `LSGET_DIR` must be readable by the `lsget` user:
+1. The `lsget` user needs read access to the served files and traversal permission on their directories. The content tree can be mounted read-only. Give `lsget` write access where it stores state or logs, under `/var/lib/lsget` and `/var/log/lsget`.
    ```bash
-   sudo chmod -R o+rX /srv/ftp
-   # or add lsget user to appropriate group
-   sudo usermod -a -G ftp lsget
+   sudo -u lsget ls /srv/ftp
    ```
 
 2. **SELinux**: If running on a system with SELinux, you may need to adjust policies:
@@ -130,9 +126,8 @@ sudo journalctl -u lsget.service -f
 
 For running multiple instances with different configurations:
 
-1. Create instance-specific configuration:
+1. Create an instance-specific configuration. On systems using `/etc/sysconfig`, place it at `/etc/sysconfig/lsget-docs`.
    ```bash
-   sudo cp /etc/default/lsget /etc/default/lsget-docs
    sudo nano /etc/default/lsget-docs
    ```
 
@@ -140,9 +135,9 @@ For running multiple instances with different configurations:
    ```bash
    LSGET_ADDR="127.0.0.1:8038"
    LSGET_DIR="/srv/docs"
-   LSGET_PIDFILE="/var/lib/lsget/lsget-docs.pid"
-   LSGET_LOGFILE="/var/log/lsget/access-docs.log"
    ```
+
+   This instance writes `/var/log/lsget/access-docs.log` by default.
 
 3. Enable and start the instance:
    ```bash
@@ -160,11 +155,8 @@ sudo systemctl start lsget.service
 # Stop service
 sudo systemctl stop lsget.service
 
-# Restart service
+# Restart after changing the configuration
 sudo systemctl restart lsget.service
-
-# Reload configuration (if supported)
-sudo systemctl reload lsget.service
 
 # Enable on boot
 sudo systemctl enable lsget.service
@@ -217,7 +209,7 @@ The service file includes several security hardening measures:
 - Runs as unprivileged `lsget` user
 - `NoNewPrivileges=true` - Prevents privilege escalation
 - `PrivateTmp=true` - Private /tmp directory
-- `ProtectSystem=strict` - Read-only /usr, /boot, /efi
+- `ProtectSystem=strict` - Read-only filesystem view with writable state and log paths
 - `ProtectHome=true` - Makes /home inaccessible
 - `RestrictAddressFamilies` - Limits network protocols
 - `LimitNOFILE=65536` - File descriptor limits
@@ -261,7 +253,7 @@ sudo -u lsget ls /srv/ftp
 
 Verify the configuration is being loaded:
 ```bash
-sudo systemctl show lsget.service | grep EnvironmentFile
+sudo systemctl show lsget.service --property=EnvironmentFiles
 ```
 
 ## Uninstallation
@@ -269,36 +261,20 @@ sudo systemctl show lsget.service | grep EnvironmentFile
 Run the uninstallation script:
 
 ```bash
-cd deploy/systemd
-sudo bash uninstall.sh
+sudo bash deploy/systemd/uninstall.sh
 ```
 
 This will:
-- Stop and disable all lsget services
+- Stop lsget services and disable enabled instances
 - Remove systemd service files
+- Remove the bundled logrotate configuration if it is unchanged
 - Reload systemd
 
-Note: Configuration files, data, and the binary are preserved. Remove manually if needed.
+Configuration files, customized logrotate configuration, content, state, logs, the binary and the service account are preserved.
 
 ## Log Rotation
 
-Create `/etc/logrotate.d/lsget`:
-
-```
-/var/log/lsget/*.log {
-    daily
-    missingok
-    rotate 14
-    compress
-    delaycompress
-    notifempty
-    create 0640 lsget lsget
-    sharedscripts
-    postrotate
-        systemctl reload lsget.service > /dev/null 2>&1 || true
-    endscript
-}
-```
+The [bundled logrotate recipe](lsget.logrotate) rotates file access logs. lsget reopens the access log on each request. If upgrading an older rotation setup, compare its `postrotate` hook with the bundled recipe.
 
 ## Support
 

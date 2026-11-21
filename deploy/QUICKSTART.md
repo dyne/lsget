@@ -24,14 +24,13 @@ sudo cp lsget /usr/local/bin/
 sudo chmod +x /usr/local/bin/lsget
 
 # Deploy service
-cd deploy/systemd
-sudo bash install.sh
+sudo bash deploy/systemd/install.sh
 
 # Configure (edit LSGET_DIR and LSGET_ADDR)
 sudo nano /etc/default/lsget
 
-# Ensure directory permissions
-sudo chmod -R o+rX /srv/ftp  # or your chosen directory
+# Check that lsget can read the selected content directory
+sudo -u lsget ls /srv/ftp
 
 # Enable and start
 sudo systemctl enable lsget.service
@@ -52,14 +51,13 @@ sudo cp lsget /usr/local/bin/
 sudo chmod +x /usr/local/bin/lsget
 
 # Deploy service
-cd deploy/systemd
-sudo bash install.sh
+sudo bash deploy/systemd/install.sh
 
-# Configure (edit LSGET_DIR and LSGET_ADDR)
-sudo vi /etc/default/lsget
+# Configure LSGET_DIR and LSGET_ADDR at the path printed by the installer
+sudo vi /etc/sysconfig/lsget
 
-# Ensure directory permissions
-sudo chmod -R o+rX /srv/ftp
+# Check that lsget can read the selected content directory
+sudo -u lsget ls /srv/ftp
 
 # SELinux (if enabled)
 sudo semanage fcontext -a -t httpd_sys_content_t "/srv/ftp(/.*)?"
@@ -88,14 +86,13 @@ cp lsget /usr/local/bin/
 chmod +x /usr/local/bin/lsget
 
 # Deploy service
-cd deploy/openrc
-sh install.sh
+sh deploy/openrc/install.sh
 
 # Configure (edit LSGET_DIR and LSGET_ADDR)
 vi /etc/conf.d/lsget
 
-# Ensure directory permissions
-chmod -R o+rX /srv/ftp
+# Check that lsget can read the selected content directory
+su -s /bin/sh -c 'ls /srv/ftp' lsget
 
 # Enable and start
 rc-update add lsget default
@@ -117,14 +114,13 @@ sudo cp lsget /usr/local/bin/
 sudo chmod +x /usr/local/bin/lsget
 
 # Deploy service
-cd deploy/systemd
-sudo bash install.sh
+sudo bash deploy/systemd/install.sh
 
 # Configure (edit LSGET_DIR and LSGET_ADDR)
 sudo nano /etc/default/lsget
 
-# Ensure directory permissions
-sudo chmod -R o+rX /srv/ftp
+# Check that lsget can read the selected content directory
+sudo -u lsget ls /srv/ftp
 
 # Enable and start
 sudo systemctl enable lsget.service
@@ -145,14 +141,13 @@ cp lsget /usr/local/bin/
 chmod +x /usr/local/bin/lsget
 
 # Deploy service
-cd deploy/openrc
-sh install.sh
+sh deploy/openrc/install.sh
 
 # Configure (edit LSGET_DIR and LSGET_ADDR)
 vi /etc/conf.d/lsget
 
-# Ensure directory permissions
-chmod -R o+rX /srv/ftp
+# Check that lsget can read the selected content directory
+su -s /bin/sh -c 'ls /srv/ftp' lsget
 
 # Enable and start
 rc-update add lsget default
@@ -298,7 +293,7 @@ tail -n 50 /var/log/lsget/lsget.err
 ```bash
 # Test if lsget user can read directory
 sudo -u lsget ls /srv/ftp  # systemd
-su -s /bin/sh lsget -c "ls /srv/ftp"  # OpenRC
+su -s /bin/sh -c 'ls /srv/ftp' lsget  # OpenRC
 ```
 
 **Port in use:**
