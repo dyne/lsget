@@ -5,3 +5,4 @@ files
 logs
 build-errors.log
 access.log
+/dist/
