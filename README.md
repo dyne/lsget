@@ -111,19 +111,47 @@ docker-compose logs -f
 ***
 ## 🎮 Quick start
 
-To start using lsget run the following commands
+From the repository root, build the binary with Go 1.24.5 or later. If you downloaded a release, start with the version check.
 
-```bash
-# Download and run
-./lsget
+```sh
+go build -o lsget .
+./lsget -version
+./lsget -h
 ```
-Open your browser at `http://localhost:8080` and enjoy the neon green shell.
+
+Create a scratch directory with a file to serve and its own writable state directory. Run lsget in the foreground.
+
+```sh
+demo=$(mktemp -d)
+mkdir "$demo/files" "$demo/state"
+printf 'Hello from lsget\n' > "$demo/files/hello.txt"
+./lsget -addr 127.0.0.1:8080 -dir "$demo/files" \
+  -logfile "$demo/state/access.log" -pid "$demo/state/lsget.pid"
+```
+
+Open `http://127.0.0.1:8080/` for the terminal or run `curl -fsS http://127.0.0.1:8080/hello.txt` in a second shell to check the file. Press Ctrl-C when finished, then run `rm -r "$demo"` from the first shell. For a long-running Linux service, follow the [native deployment quick start](deploy/QUICKSTART.md).
 
 ### Direct file links
 
-A file in the served directory can be shared by its path, such as `/eudi/report.pdf`, or with the `file` query parameter, such as `/?file=eudi/report.pdf`. Both links resolve from the served root and use the same content type and download headers. URL-encode special characters in the query value, for example `/?file=eudi/meeting%20notes.pdf`. The `file` parameter returns 404 for missing or ignored files and for directories.
+A file in the served directory can be shared by its path, such as `/eudi/report.pdf`, or with the `file` query parameter, such as `/?file=eudi/report.pdf`. Both resolve from the served root. Encode special characters in each path segment and in the query value. For example, `meeting notes #1.pdf` becomes `meeting%20notes%20%231.pdf`, and a literal `+` in the query value becomes `%2B`.
 
-Direct file links and terminal downloads respect `.lsgetignore` rules on files and their parent directories. ZIP downloads omit ignored entries. Downloads can follow symlinks that resolve within the served root.
+For scripted downloads, use `?file=` to receive HTTP 404 for a missing or ignored file or a directory. A missing direct path can return the terminal HTML with HTTP 200. Verify the downloaded bytes against the publisher's checksum before unpacking. For example, if the release includes `release/release files.tar.gz` and you have a trusted `release.sha256` for `release-files.tar.gz`, check either URL form on a listener serving that tree.
+
+```sh
+curl -fsS -o release-files.tar.gz 'http://127.0.0.1:8080/?file=release%2Frelease%20files.tar.gz' &&
+  sha256sum -c release.sha256
+```
+
+```sh
+curl -fsS -o release-files.tar.gz 'http://127.0.0.1:8080/release/release%20files.tar.gz' &&
+  sha256sum -c release.sha256
+```
+
+### Ignore rules
+
+Put a `.lsgetignore` file in the served root or in a subdirectory. Use one shell-style glob per line. Blank lines and lines beginning with `#` are skipped. A rule matches the basename or the path relative to its `.lsgetignore` directory. For example, `*.log` hides matching names anywhere below that directory, and `drafts/private` hides that relative path and all its descendants. The rules support `*`, `?` and character classes. They have no Git-style `!` exceptions or special `**` syntax.
+
+Listings, direct and query links, terminal downloads, ZIP entries, and generated sitemaps respect ignore rules. Downloads can follow symlinks when the resolved path stays inside the served root and both names pass the ignore rules. Keep private files outside the served root. Direct requests can still read dotfiles, and lsget skips ignore files it cannot read.
 
 ### Terminal sessions
 
@@ -161,7 +189,7 @@ An archive that exceeds the entry, depth or path budget is rejected before strea
 
 ### Application shell and published websites
 
-The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
+The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `./lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
 
 Terminal controls live in `assets/js/terminal.js` and rendering helpers in `assets/js/terminal-view.js`. Rebuild with Go when editing either module. The embedded shell uses `Cache-Control: no-store` and loads its scripts from `/assets/lsget-shell/<version>/`, where the version is a SHA-256 digest of the shell and its scripts. Those script responses can be cached for a year. After an upgrade, reloading the page gets the new shell and script paths. A missing script from an older version returns HTTP 404 until the page is reloaded.
 
@@ -172,112 +200,44 @@ A visible `index.html` in a served directory takes precedence over the terminal,
 The embedded terminal enforces a CSP. Each response supplies a nonce for its scripts and stylesheet, API requests stay on the same origin, and README images can use HTTP or HTTPS. Datastar compiles the shell’s `data-*` expressions with JavaScript’s `Function` constructor, so the enforced policy permits `'unsafe-eval'`. To trial a stricter policy on a development or staging listener, set `-shell-csp report-only`. This mode issues the proposed policy without `'unsafe-eval'` as a report-only header. Browser developer tools show the expected Datastar violations. Use the default `enforce` mode for deployments. The shell policy applies to the embedded terminal response. Published documents, files, and the generated `?nojs=1` directory listing keep their own response behavior.
 
 ### Configuration flags
-```
-./lsget -h
-Usage of ./lsget:
-  -addr string
-        address to listen on (default "localhost:8080")
-  -baseurl string
-        base URL for the site (e.g., https://files.example.com)
-  -catmax cat
-        max bytes printable via cat and used by completion (default 4096)
-  -dev-template string
-        use a local application template for development
-  -dir string
-        directory to expose as root (default ".")
-  -logfile string
-        path to log file for statistics
-  -pid string
-        path to PID file
-  -secure-session-cookie
-        require HTTPS for session cookies behind an HTTPS-only proxy
-  -shell-csp string
-        application CSP mode: enforce or report-only (default "enforce")
-  -sitemap int
-        refresh the in-memory sitemap every N minutes (0 = on demand only)
-  -trusted-proxies string
-        comma-separated CIDRs allowed to supply forwarded metadata
-  -version
-        Print the version of this software and exits
-```
 
-### Environment Variables
+Run `./lsget -h` for the flags in your binary. Flags take precedence over nonempty environment variables, which take precedence over the binary defaults. A standalone binary reads its process environment. [.env.example](.env.example) supplies values for Compose interpolation.
 
-All configuration flags can also be set via environment variables with the `LSGET_` prefix. Environment variables are used as defaults and can be overridden by command-line flags.
+| Environment variable | Flag | Standalone default | Purpose |
+| --- | --- | --- | --- |
+| `LSGET_ADDR` | `-addr` | `localhost:8080` | Listener address in host:port form |
+| `LSGET_DIR` | `-dir` | `.` | Served directory, relative to the working directory if needed |
+| `LSGET_CATMAX` | `-catmax` | `4096` | Byte limit for `cat` and its completion suggestions |
+| `LSGET_DEV_TEMPLATE` | `-dev-template` | Empty | Local application template for development |
+| `LSGET_PID` | `-pid` | Empty | Optional application PID file |
+| `LSGET_LOGFILE` | `-logfile` | Empty | Optional access log file. Request logs also go to stdout |
+| `LSGET_SECURE_SESSION_COOKIE` | `-secure-session-cookie` | `false` | Require HTTPS for session cookies behind an HTTPS-only proxy |
+| `LSGET_BASEURL` | `-baseurl` | Empty | Public URL for share links, origin checks and generated sitemaps |
+| `LSGET_SHELL_CSP` | `-shell-csp` | `enforce` | Embedded shell CSP mode |
+| `LSGET_SITEMAP` | `-sitemap` | `0` | Sitemap refresh interval in minutes, with `0` for on-demand generation |
+| `LSGET_TRUSTED_PROXIES` | `-trusted-proxies` | Empty | Comma-separated proxy CIDRs allowed to supply forwarding headers |
 
-| Environment Variable | Flag Equivalent | Description | Example |
-|---------------------|-----------------|-------------|---------|
-| `LSGET_ADDR` | `-addr` | Address to listen on (bind address) | `LSGET_ADDR=0.0.0.0:8080` |
-| `LSGET_DIR` | `-dir` | Directory to expose as root | `LSGET_DIR=/var/www/files` |
-| `LSGET_CATMAX` | `-catmax` | Max bytes for cat command | `LSGET_CATMAX=8192` |
-| `LSGET_DEV_TEMPLATE` | `-dev-template` | Local development template | `LSGET_DEV_TEMPLATE=./index.html` |
-| `LSGET_PID` | `-pid` | Path to PID file | `LSGET_PID=/var/run/lsget.pid` |
-| `LSGET_LOGFILE` | `-logfile` | Path to log file for statistics | `LSGET_LOGFILE=/var/log/lsget.log` |
-| `LSGET_SECURE_SESSION_COOKIE` | `-secure-session-cookie` | Require HTTPS for session cookies behind an HTTPS-only proxy | `LSGET_SECURE_SESSION_COOKIE=true` |
-| `LSGET_BASEURL` | `-baseurl` | **Optional:** Public URL (see below) | `LSGET_BASEURL=https://files.example.com` |
-| `LSGET_SHELL_CSP` | `-shell-csp` | Embedded application CSP mode | `LSGET_SHELL_CSP=enforce` |
-| `LSGET_SITEMAP` | `-sitemap` | In-memory sitemap refresh interval (minutes) | `LSGET_SITEMAP=60` |
-| `LSGET_TRUSTED_PROXIES` | `-trusted-proxies` | CIDRs for trusted HTTP proxies | `LSGET_TRUSTED_PROXIES=10.0.0.4/32,2001:db8::4/128` |
+The native recipes listen on `127.0.0.1:8037` and serve `/srv/ftp`. Both work from `/var/lib/lsget` and run as the unprivileged `lsget` user. The default access log is `/var/log/lsget/access.log` for systemd and `/var/log/lsget/lsget.log` for OpenRC. The native managers track the service process, so the application PID file is optional. See the [native defaults and configuration paths](deploy/QUICKSTART.md#native-service-defaults) for both init systems and named instances.
 
-lsget validates configuration before accepting requests. Set `LSGET_CATMAX` and `LSGET_SITEMAP` to nonnegative whole numbers. An access log must be a writable regular file. lsget creates missing log directories when their parent allows it.
+Serve content with read and directory traversal permissions for the process user. Keep the content read-only for that user. An optional access log must be a writable regular file. lsget creates missing log directories when their parent permits it. An optional PID file needs an existing writable parent. Place both outside the served tree. lsget creates the PID file exclusively and removes it after a clean shutdown. If a crash leaves a PID file behind, establish that the old process has exited before removing it and restarting.
 
-Keep the PID file and access log in writable state directories when serving read-only content. lsget creates the PID file exclusively and removes it after shutdown. If a crash leaves a stale PID file, verify that the previous service has exited before removing it and restarting. SIGINT and SIGTERM stop background refreshes and new connections, then give active HTTP requests up to five seconds to finish before closing their connections.
+`LSGET_CATMAX` and `LSGET_SITEMAP` accept nonnegative whole numbers. Startup errors identify invalid settings and inaccessible paths on stderr. For a bind failure, check that `LSGET_ADDR` names an available local address and port. Stop an earlier lsget instance or choose another port. For service-specific logs, permissions, and restart commands, see [service troubleshooting](deploy/QUICKSTART.md#troubleshooting). SIGINT and SIGTERM stop background refreshes and new connections, then give active HTTP requests up to five seconds to finish.
 
 #### Sitemap
 
-Set `LSGET_BASEURL` to generate `/sitemap.xml` with canonical URLs. The server keeps the generated XML in memory, so the served directory can be read-only. A positive `LSGET_SITEMAP` interval generates the sitemap at startup and refreshes it periodically. With the default interval of `0`, the first request generates the sitemap and the server caches it for its lifetime.
+Set `LSGET_BASEURL` to generate `/sitemap.xml` with canonical URLs. With the default interval of `0`, the first successful request generates a snapshot in memory and lsget uses it until restart. A positive `LSGET_SITEMAP` interval in minutes generates the initial snapshot at startup and replaces it after each successful refresh. Generation never writes XML into the served directory.
 
-Without `LSGET_BASEURL`, you can serve a manually maintained `sitemap.xml` from the served directory.
-
-#### About LSGET_ADDR vs LSGET_BASEURL
-
-These serve different purposes and are kept separate for flexibility:
-
-**`LSGET_ADDR`** (required) - Where the server **binds/listens**
-- Network-layer configuration
-- Examples: `0.0.0.0:8080`, `localhost:8080`, `127.0.0.1:3000`
-
-**`LSGET_BASEURL`** (optional) - What URL users **access publicly**
-- Application-layer configuration
-- Full URL with protocol, no trailing slash
-- Examples: `https://files.example.com`, `https://cdn.company.com`
-
-**When you DON'T need `LSGET_BASEURL`** (auto-detection works):
-- ✅ Running locally for development
-- ✅ Direct access to the server without reverse proxy
-- ✅ Using localhost or direct IP access
-- Share links use the HTTP Host and the connection's TLS scheme
-
-**When you DO need `LSGET_BASEURL`**:
-- 🔧 Behind reverse proxy (Nginx, Caddy, Traefik) with different public URL
-- 🔧 Docker with port mapping to a different domain
-- 🔧 Generating sitemap.xml with specific canonical URLs
-- 🔧 Using `url`/`share` commands for consistent shareable links
+If a periodic refresh fails, lsget logs the error and continues to serve the last good snapshot. Check stderr or the service logs. Restore read access and keep the published tree within the filesystem work limits, then wait for the next scheduled refresh. A restart clears the snapshot. Before the first success, an over-budget sitemap returns HTTP 422. Concurrent work can return HTTP 503 and can be retried. If the tree cannot fit the generation limits, clear `LSGET_BASEURL`, restart, and publish a visible, readable `sitemap.xml` in the served root. lsget serves that manual file directly, and a missing or ignored file returns HTTP 404.
 
 #### Proxy metadata and access logs
 
-Set `LSGET_BASEURL` to use the public origin and optional path prefix for share links and generated sitemaps. Set `LSGET_TRUSTED_PROXIES` only to the addresses or networks of proxies you control. Without trusted proxies, the log uses the socket peer address. A trusted peer can supply a single `X-Forwarded-For` list of up to 16 plain IPv4 or IPv6 addresses. lsget walks the list from the right through trusted proxies to the first untrusted address, or uses the leftmost address if every hop is trusted. Missing, repeated, malformed or oversized lists use the socket peer. Configure the edge proxy to remove client-supplied forwarding fields and each later trusted proxy to append its observed peer to the same list.
+`LSGET_ADDR` controls where the process listens. Set `LSGET_BASEURL` to the absolute public HTTP or HTTPS URL, such as `https://files.example.com` or `https://example.com/files`, with no credentials, query or fragment. The URL supplies the public origin and optional path prefix for share links and generated sitemaps.
+
+Set `LSGET_TRUSTED_PROXIES` only to the addresses or networks of proxies you control. Without trusted proxies, the log uses the socket peer address. A trusted peer can supply a single `X-Forwarded-For` list of up to 16 plain IPv4 or IPv6 addresses. lsget walks the list from the right through trusted proxies to the first untrusted address, or uses the leftmost address if every hop is trusted. Missing, repeated, malformed or oversized lists use the socket peer. Configure the edge proxy to remove client-supplied forwarding fields and each later trusted proxy to append its observed peer to the same list.
 
 For share links without a configured base URL, the trusted peer may set one `X-Forwarded-Proto: https` value when forwarding over plain HTTP. Configure that peer to set the public scheme itself. `X-Forwarded-Host` and `Forwarded` are ignored. Forwarded metadata has no effect on browser-origin checks or session cookie settings.
 
 Each request produces one combined-format record on stdout and in the configured access log. Recognized download, share and checksum events also produce one command record in the configured file with the command name, resolved virtual file or archive description, and HTTP status. Request records omit query strings. Logs include the selected IP, request path, bounded user agent and referrer origin. Cookie and Authorization headers, raw terminal input and referrer credentials, paths and queries are omitted. `outcome=canceled`, `outcome=aborted` or `outcome=write_error` identifies interrupted responses, with `000` when no final HTTP status was written. Archive failures retain the `archive=incomplete` marker. Rotate by renaming the log. The next request opens the original path again, and file write failures are reported to stderr at most once per minute.
-
-**Example usage with environment variables:**
-
-```bash
-# Set environment variables
-export LSGET_ADDR="0.0.0.0:8080"
-export LSGET_DIR="/var/www/files"
-export LSGET_LOGFILE="/var/log/lsget.log"
-
-# Run lsget (uses env vars)
-./lsget
-
-# Or use with Docker
-docker run -e LSGET_ADDR=0.0.0.0:8080 -e LSGET_DIR=/data lsget
-```
-
-**Priority order:** Command-line flags > Environment variables > Default values
 
 ### Docker Compose
 
@@ -302,7 +262,7 @@ docker-compose up -d
 - **Address**: `0.0.0.0:8080` (accessible from outside container)
 - **Directory**: `/data` (mapped to `./files` on host)
 - **Log file**: `/logs/access.log` (mapped to `./logs` on host)
-- **Port mapping**: `8080:8080` (customizable via `LSGET_PORT` env var)
+- **Host port**: Set `ports` in your Compose configuration to publish the container listener on the host.
 
 **Security & Permissions:**
 
@@ -314,9 +274,7 @@ The Docker image uses **Google's Distroless base** for maximum security:
 
 **Permission Setup for Volumes:**
 
-⚠️ **IMPORTANT**: Since the container runs as UID 65532 (`nonroot` user), mounted volumes **must be writable** for:
-- `/data` - Serving files (read access sufficient)
-- `/logs` - **Writing access logs** (required for `stats` command to work)
+The container runs as UID 65532 (`nonroot` user). Give it read and directory traversal access to `/data` and write access to `/logs` for the configured access log.
 
 ```bash
 # Create directories with proper permissions
@@ -337,7 +295,7 @@ chmod 755 files
 
 **For Coolify/Platform Deployments:**
 
-⚠️ If `stats` command shows "no activity logged yet":
+If the access log is missing:
 1. **Check volume permissions** - Logs directory must be writable by UID 65532
 2. **Coolify**: Volumes are usually auto-mounted, but check persistent storage settings
 3. **Manual fix**: SSH into the server and run `chmod 777 /path/to/mounted/logs`
@@ -347,18 +305,16 @@ chmod 755 files
 
 ```bash
 # Basic configuration - baseurl auto-detects
-LSGET_PORT=8080
 LSGET_CATMAX=262144
-# LSGET_BASEURL is empty - auto-detection works fine!
+# Leave SERVICE_URL_LSGET empty to derive share links from the request.
 ```
 
 **Example 2: Behind reverse proxy (baseurl needed):**
 
 ```bash
-# When lsget runs on http://localhost:8080
-# But users access via https://files.example.com
-LSGET_ADDR=127.0.0.1:8080
-LSGET_BASEURL=https://files.example.com
+# Keep the container listener reachable by the proxy.
+LSGET_ADDR=0.0.0.0:8080
+SERVICE_URL_LSGET=https://files.example.com
 LSGET_SITEMAP=60
 ```
 
@@ -367,8 +323,7 @@ LSGET_SITEMAP=60
 ```bash
 # Container binds to 0.0.0.0:8080
 # But accessed via custom domain
-LSGET_PORT=8080
-LSGET_BASEURL=https://cdn.mycompany.com
+SERVICE_URL_LSGET=https://cdn.mycompany.com
 LSGET_LOGFILE=/logs/access.log
 ```
 
@@ -500,10 +455,7 @@ Search for text patterns in files.
 - `-i` — Case-insensitive search
 - `-n` — Show line numbers in results
 
-#### Statistics & Help
-
-**`stats`**
-Display access statistics showing file shares, downloads, and checksum operations. Requires the `-logfile` flag to be set when starting lsget.
+#### Help
 
 **`help`**
 Display the list of available commands.
@@ -550,14 +502,7 @@ Designed, written and maintained by Puria Nafisi Azizi with contributions by Den
 ***
 ## 👤 Contributing
 
-Please first take a look at the [Dyne.org - Contributor License Agreement](CONTRIBUTING.md) then
-
-1.  🔀 [FORK IT](../../fork)
-2.  Create your feature branch `git checkout -b feature/branch`
-3.  Commit your changes `git commit -am 'feat: New feature\ncloses #398'`
-4.  Push to the branch `git push origin feature/branch`
-5.  Create a new Pull Request `gh pr create -f`
-6.  🙏 Thank you
+The [contributor guide](CONTRIBUTING.md) covers Dyne.org’s Contributor Agreement, local verification, and opening a pull request. Report suspected vulnerabilities through the [private security channel](CONTRIBUTING.md#report-a-security-issue).
 
 
 **[🔝 back to top](#toc)**
