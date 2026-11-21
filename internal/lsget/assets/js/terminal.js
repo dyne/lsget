@@ -11,7 +11,10 @@ const completionHint = document.getElementById("completion-hint");
 const completionOptions = document.getElementById("completion-options");
 const panel = document.getElementById("readme");
 const readmeToggle = document.getElementById("readme-toggle");
-const narrow = window.matchMedia("(max-width: 768px)");
+const compactReader = window.matchMedia(
+  "(max-width: 768px), (orientation: landscape) and (max-height: 450px) and (any-pointer: coarse)",
+);
+const touchScreen = window.matchMedia("(any-pointer: coarse)");
 const directoryError = document.getElementById("directory-error");
 const directoryErrorMessage = document.getElementById("directory-error-message");
 const retryDirectory = document.getElementById("retry-directory");
@@ -31,10 +34,22 @@ let commandRequest;
 let completionRequest;
 let suggestions = [];
 let selectedSuggestion = -1;
+let composing = false;
 let readmeOpen = false;
+let readmeClosing = false;
 
 function focusInput() {
   input.focus({ preventScroll: true });
+}
+
+function focusNavigationResult(event) {
+  const touchActivation = event.pointerType === "touch" || event.pointerType === "pen" ||
+    (!event.pointerType && touchScreen.matches);
+  if (touchActivation) {
+    transcript.focus({ preventScroll: true });
+  } else {
+    focusInput();
+  }
 }
 
 function scrollTranscript() {
@@ -136,24 +151,44 @@ function acceptSuggestion(index) {
   announce("Completed " + suggestion.name + ".");
 }
 
-function updateReadme() {
-  const open = narrow.matches && readmeOpen;
-  panel.classList.toggle("show", open);
-  panel.inert = narrow.matches && !open;
-  terminal.inert = open;
-  readmeToggle.setAttribute("aria-expanded", String(open));
-  readmeToggle.setAttribute("aria-label", open ? "Close README" : "Show README");
-  readmeToggle.textContent = open ? "Close README" : "README";
+function updateReadme(open = false) {
+  const wasOpen = readmeOpen;
+  const previousFocus = document.activeElement;
+  readmeOpen = compactReader.matches && open;
+  panel.classList.toggle("show", readmeOpen);
+  panel.inert = compactReader.matches && !readmeOpen;
+  terminal.inert = readmeOpen;
+  readmeToggle.setAttribute("aria-expanded", String(readmeOpen));
+  readmeToggle.setAttribute("aria-label", readmeOpen ? "Close README" : "Show README");
+  readmeToggle.textContent = readmeOpen ? "Close README" : "README";
+  if (readmeOpen && !wasOpen) {
+    panel.focus({ preventScroll: true });
+  } else if (panel.inert && (wasOpen || panel.contains(previousFocus))) {
+    readmeToggle.focus({ preventScroll: true });
+  } else if (!compactReader.matches && previousFocus === readmeToggle) {
+    panel.focus({ preventScroll: true });
+  }
 }
 
-function setReadmeOpen(open) {
-  readmeOpen = open;
+function closeReadme() {
+  // Close and Escape consume the same entry as Back. Ignore repeated dismissal
+  // while the history traversal is still pending.
+  if (readmeClosing) return;
+  readmeClosing = true;
   updateReadme();
-  if (open) {
-    panel.focus({ preventScroll: true });
-  } else {
-    focusInput();
+  window.history.back();
+}
+
+function toggleReadme() {
+  if (!compactReader.matches || readmeClosing) return;
+  if (readmeOpen) {
+    closeReadme();
+    return;
   }
+  if (window.history.state?.readme !== true) {
+    window.history.pushState({ cwd, readme: true }, "");
+  }
+  updateReadme(true);
 }
 
 async function requestJSON(endpoint, directory, request, body) {
@@ -261,19 +296,33 @@ async function runCommand(command, listAfterCd = false) {
       ? terminalView.sameOriginURL(terminalView.pathURL(redirect))
       : null;
     if (destination) {
-      window.location.assign(destination);
+      if (window.history.state?.readme === true) {
+        updateReadme();
+        window.location.replace(destination);
+      } else {
+        window.location.assign(destination);
+      }
       return;
     }
     if (typeof response.cwd === "string" && typeof response.readme === "string") {
       directoryRequest?.abort();
       directoryError.hidden = true;
       clearCompletion();
-      terminalView.readme(panel, response);
-      if (response.cwd !== cwd) {
+      const changedDirectory = response.cwd !== cwd;
+      if (changedDirectory) {
+        updateReadme();
         setDirectory(response.cwd);
-        window.history.pushState({ cwd }, "", directoryURL(cwd));
+        // A command may finish while the reader is open. Replace its entry so
+        // directory Back still lands on the previous folder with the reader closed.
+        if (window.history.state?.readme === true) {
+          window.history.replaceState({ cwd }, "", directoryURL(cwd));
+        } else {
+          window.history.pushState({ cwd }, "", directoryURL(cwd));
+        }
         announce("Directory " + cwd + ".");
       }
+      terminalView.readme(panel, response);
+      if (changedDirectory) panel.scrollTop = 0;
       if (listAfterCd) await listDirectory(cwd, request);
     }
   } catch (error) {
@@ -343,7 +392,11 @@ async function completeInput() {
     completionOptions.hidden = false;
     input.setAttribute("aria-expanded", "true");
     const count = (truncated ? "Showing " : "") + suggestions.length + " paths.";
-    showCompletion(count + " ↑/↓ then Enter", count + " Use the up or down arrow, then Enter.");
+    if (touchScreen.matches) {
+      showCompletion(count + " Tap a path.", count + " Tap a path, or use the up or down arrow, then Enter.");
+    } else {
+      showCompletion(count + " ↑/↓ then Enter", count + " Use the up or down arrow, then Enter.");
+    }
   } catch (error) {
     if (request.signal.aborted) return;
     showCompletion(error.message === "HTTP 503"
@@ -356,6 +409,8 @@ async function completeInput() {
 
 input.addEventListener("input", clearCompletion);
 input.addEventListener("blur", clearCompletion);
+input.addEventListener("compositionstart", () => { composing = true; });
+input.addEventListener("compositionend", () => { composing = false; });
 
 completeButton.addEventListener("click", () => {
   focusInput();
@@ -370,10 +425,8 @@ completionOptions.addEventListener("click", event => {
 
 form.addEventListener("submit", event => {
   event.preventDefault();
-  if (selectedSuggestion >= 0) {
-    acceptSuggestion(selectedSuggestion);
-    return;
-  }
+  // A composing Enter can also trigger an implicit form submission.
+  if (composing) return;
   const command = input.value;
   rememberCommand(command);
   setInput("");
@@ -381,10 +434,14 @@ form.addEventListener("submit", event => {
 });
 
 input.addEventListener("keydown", event => {
-  if (event.isComposing) return;
+  if (event.isComposing || composing) return;
   const key = event.key;
   if (key === "Enter") {
-    form.requestSubmit();
+    if (selectedSuggestion >= 0) {
+      acceptSuggestion(selectedSuggestion);
+    } else {
+      form.requestSubmit();
+    }
   } else if (key === "Escape" && (completionRequest || !completions.hidden)) {
     clearCompletion();
     announce("Path suggestions closed.");
@@ -429,7 +486,7 @@ transcript.addEventListener("click", event => {
   if (window.getSelection()?.type === "Range") return;
   const item = event.target.closest(".clickable-file");
   if (!item) return;
-  focusInput();
+  focusNavigationResult(event);
   const { cmd, file } = item.dataset;
   const command = cmd + " " + quoteOperand(file);
   rememberCommand(command);
@@ -438,28 +495,31 @@ transcript.addEventListener("click", event => {
 });
 
 // Datastar invokes this action from the shell's data-on-click attribute.
-window.terminalView = { toggleReadme: () => setReadmeOpen(!readmeOpen) };
-narrow.addEventListener("change", () => {
-  const restoreFocus = narrow.matches &&
-    (panel.contains(document.activeElement) || document.activeElement === readmeToggle);
-  readmeOpen = false;
-  updateReadme();
-  if (restoreFocus) focusInput();
+window.terminalView = { toggleReadme };
+compactReader.addEventListener("change", () => {
+  if (!compactReader.matches && readmeOpen) {
+    closeReadme();
+  } else {
+    updateReadme();
+  }
 });
 layout.addEventListener("keydown", event => {
   if (event.key === "Escape" && readmeOpen) {
-    setReadmeOpen(false);
+    closeReadme();
     event.preventDefault();
   }
 });
-retryDirectory.addEventListener("click", () => {
-  focusInput();
+retryDirectory.addEventListener("click", event => {
+  focusNavigationResult(event);
   void loadDirectory();
 });
 
 window.addEventListener("popstate", event => {
   const path = event.state?.cwd || decodeURIComponent(window.location.pathname);
-  if (path === cwd) return;
+  const sameDirectory = path === cwd;
+  readmeClosing = false;
+  updateReadme(sameDirectory && event.state?.readme === true);
+  if (sameDirectory) return;
   commandRequest?.abort();
   clearCompletion();
   panel.replaceChildren();
@@ -472,5 +532,5 @@ setDirectory(cwd);
 updateReadme();
 window.history.replaceState({ cwd }, "", terminalView.pathURL(cwd) + window.location.search + window.location.hash);
 appendTranscript(terminalView.appendHelp);
-focusInput();
+if (!touchScreen.matches) focusInput();
 void loadDirectory();

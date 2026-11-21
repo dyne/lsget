@@ -172,7 +172,7 @@
       }
 
       /* Responsive styles */
-      @media (max-width: 768px) {
+      @media (max-width: 768px), (orientation: landscape) and (max-height: 450px) and (any-pointer: coarse) {
         .layout {
           flex-direction: column;
         }
@@ -474,6 +474,20 @@
         align-items: baseline;
         gap: 0.35rem 0.65rem;
       }
+      .command-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        max-inline-size: 100%;
+      }
+      #run-command {
+        color: var(--ctp-frappe-base);
+        background: var(--ctp-frappe-blue);
+        border-color: transparent;
+      }
+      #run-command:active {
+        background: var(--ctp-frappe-sapphire);
+      }
       .terminal-input {
         flex: 1;
         min-inline-size: min(10ch, 100%);
@@ -515,11 +529,25 @@
         color: var(--ctp-frappe-base);
         background: var(--olivetti);
       }
-      @media (pointer: coarse) {
+      @media (any-pointer: coarse) {
         .terminal-control,
         .terminal-input,
         #completion-options li {
           min-block-size: 44px;
+        }
+        .command-actions .terminal-control {
+          min-inline-size: 44px;
+        }
+      }
+      @media (orientation: landscape) and (max-height: 450px) {
+        .terminal {
+          padding-block-end: 0.5rem;
+        }
+        #completion-hint {
+          margin-block: 0.125em;
+        }
+        #completion-options {
+          max-block-size: min(28vh, 6rem);
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -576,9 +604,12 @@
                 aria-controls="completion-options"
                 aria-expanded="false"
               />
-              <button class="terminal-control" id="complete-command" type="button">Complete</button>
+              <div class="command-actions">
+                <button class="terminal-control" id="complete-command" type="button">Complete</button>
+                <button class="terminal-control" id="run-command" type="submit">Run</button>
+              </div>
             </div>
-            <span class="visually-hidden" id="command-help">Press Enter to run a command. Use Complete for path suggestions.</span>
+            <span class="visually-hidden" id="command-help">Press Enter or use Run to submit. Use Complete for path suggestions.</span>
             <div id="completions" hidden>
               <p id="completion-hint"></p>
               <ul id="completion-options" role="listbox" aria-label="Path suggestions" hidden></ul>
