@@ -18,10 +18,9 @@ sudo cp lsget /usr/local/bin/
 sudo chmod +x /usr/local/bin/lsget
 
 # Install service
-cd deploy/systemd
-sudo bash install.sh
+sudo bash deploy/systemd/install.sh
 
-# Configure
+# Configure at the path printed by the installer
 sudo nano /etc/default/lsget
 
 # Start service
@@ -38,8 +37,7 @@ cp lsget /usr/local/bin/
 chmod +x /usr/local/bin/lsget
 
 # Install service
-cd deploy/openrc
-sh install.sh
+sh deploy/openrc/install.sh
 
 # Configure
 vi /etc/conf.d/lsget
@@ -71,15 +69,15 @@ Both init systems use similar configuration variables:
 |----------|---------|-------------|
 | `LSGET_ADDR` | `127.0.0.1:8037` | Listen address (IP:PORT) |
 | `LSGET_DIR` | `/srv/ftp` | Root directory to serve |
-| `LSGET_CATMAX` | `262144` | Max bytes for cat (256 KiB) |
-| `LSGET_PIDFILE` | Auto-generated | PID file location |
+| `LSGET_CATMAX` | `4096` | Max bytes for cat and completion |
+| `LSGET_PID` | Unset | Optional application PID file |
 | `LSGET_LOGFILE` | `/var/log/lsget/...` | Access log file |
 
 ### systemd Configuration
-Edit: `/etc/default/lsget`
+Edit `/etc/default/lsget` or `/etc/sysconfig/lsget` as printed by the installer.
 
 ### OpenRC Configuration
-Edit: `/etc/conf.d/lsget`
+Edit `/etc/conf.d/lsget`.
 
 ## Multiple Instances
 
@@ -87,8 +85,7 @@ Both init systems support running multiple instances with different configuratio
 
 ### systemd Instances
 ```bash
-# Create instance config
-sudo cp /etc/default/lsget /etc/default/lsget-docs
+# Set LSGET_ADDR to 127.0.0.1:8038 and LSGET_DIR to the content path
 sudo nano /etc/default/lsget-docs
 
 # Enable and start
@@ -99,10 +96,9 @@ sudo systemctl start lsget@docs.service
 ### OpenRC Instances
 ```sh
 # Create symlink
-ln -s /etc/init.d/lsget /etc/init.d/lsget.docs
+ln -s lsget /etc/init.d/lsget.docs
 
-# Create instance config
-cp /etc/conf.d/lsget /etc/conf.d/lsget.docs
+# Set LSGET_ADDR to 127.0.0.1:8038 and LSGET_DIR to the content path
 vi /etc/conf.d/lsget.docs
 
 # Enable and start
@@ -112,21 +108,15 @@ rc-service lsget.docs start
 
 ## Security
 
-Both deployment configurations include security hardening:
-
-### Common Security Features
-- Runs as unprivileged `lsget` user
-- Isolated working directory
-- Resource limits
-- Read-only system directories
-- Private temporary directories
+Both services run as the unprivileged `lsget` user with `/var/lib/lsget` as the working directory. They can serve a read-only content mount. The account needs read and traversal access to the content and write access to its configured state and log paths.
 
 ### systemd-specific
 - `NoNewPrivileges=true`
-- `ProtectSystem=strict`
+- `ProtectSystem=strict` with writable state and log paths
 - `ProtectHome=true`
+- `PrivateTmp=true`
 - `RestrictAddressFamilies`
-- Advanced sandboxing features
+- Resource limits
 
 ### OpenRC-specific
 - Process supervision
@@ -170,7 +160,7 @@ Both configurations include logrotate support:
 - Rotates logs daily
 - Keeps 14 days of logs
 - Compresses old logs
-- Reloads service after rotation
+- The server reopens the access log for each request
 
 ## Service Management Comparison
 
@@ -179,7 +169,6 @@ Both configurations include logrotate support:
 | Start | `systemctl start lsget` | `rc-service lsget start` |
 | Stop | `systemctl stop lsget` | `rc-service lsget stop` |
 | Restart | `systemctl restart lsget` | `rc-service lsget restart` |
-| Reload | `systemctl reload lsget` | `rc-service lsget reload` |
 | Status | `systemctl status lsget` | `rc-service lsget status` |
 | Enable | `systemctl enable lsget` | `rc-update add lsget default` |
 | Disable | `systemctl disable lsget` | `rc-update del lsget default` |

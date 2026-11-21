@@ -6,18 +6,11 @@ After=network.target
 [Service]
 Type=simple
 User=lsget
-Group=lsget
+Environment=LSGET_ADDR=127.0.0.1:8037 LSGET_DIR=/srv/ftp LSGET_LOGFILE=/var/log/lsget/access-%i.log
 EnvironmentFile=-/etc/default/lsget-%i
 EnvironmentFile=-/etc/sysconfig/lsget-%i
-ExecStart=/usr/local/bin/lsget \
-  -addr ${LSGET_ADDR} \
-  -dir ${LSGET_DIR} \
-  -catmax ${LSGET_CATMAX} \
-  -pid ${LSGET_PIDFILE} \
-  -logfile ${LSGET_LOGFILE} \
-  -baseurl ${LSGET_BASEURL} \
-  -sitemap ${LSGET_SITEMAP}
-ExecReload=/bin/kill -HUP $MAINPID
+# Preserve the legacy recipe's PID setting when LSGET_PID is absent.
+ExecStart=/bin/sh -ec 'LSGET_PID="$${LSGET_PID-$${LSGET_PIDFILE:-}}" exec /usr/local/bin/lsget'
 Restart=on-failure
 RestartSec=5s
 

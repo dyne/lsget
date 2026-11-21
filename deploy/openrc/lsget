@@ -1,0 +1,42 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# OpenRC sources this file and reads the service settings below.
+# shellcheck disable=SC2034
+
+description="lsget terminal file server"
+command=/usr/local/bin/lsget
+command_user=lsget
+command_args=${LSGET_OPTS:-}
+directory=/var/lib/lsget
+supervisor=supervise-daemon
+respawn_delay=5
+respawn_max=3
+respawn_period=60
+retry=TERM/15/KILL/5
+
+# OpenRC passes these paths through its command parser.
+case "$RC_SVCNAME" in
+  *[!a-zA-Z0-9_.-]*)
+    eerror "Invalid lsget service name: $RC_SVCNAME"
+    return 1
+    ;;
+esac
+pidfile="/run/lsget/$RC_SVCNAME.pid"
+output_log="/var/log/lsget/$RC_SVCNAME.out"
+error_log="/var/log/lsget/$RC_SVCNAME.err"
+
+depend() {
+  need localmount
+  use net
+}
+
+start_pre() {
+  checkpath -d -m 0755 -o root:root /run/lsget || return 1
+
+  export LSGET_ADDR="${LSGET_ADDR:-127.0.0.1:8037}"
+  export LSGET_DIR="${LSGET_DIR:-/srv/ftp}"
+  export LSGET_LOGFILE="${LSGET_LOGFILE-/var/log/lsget/$RC_SVCNAME.log}"
+  export LSGET_PID="${LSGET_PID-${LSGET_PIDFILE:-}}"
+  export LSGET_CATMAX LSGET_BASEURL LSGET_SITEMAP LSGET_TRUSTED_PROXIES
+  export LSGET_SHELL_CSP LSGET_SECURE_SESSION_COOKIE LSGET_DEV_TEMPLATE
+}

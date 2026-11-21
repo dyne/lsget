@@ -1,64 +1,35 @@
 #!/bin/bash
-# Uninstallation script for lsget systemd service
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Check if running as root
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}Error: This script must be run as root${NC}"
+  printf '%s\n' 'Run this uninstaller as root.' >&2
   exit 1
 fi
 
-echo -e "${YELLOW}Uninstalling lsget systemd service...${NC}"
+script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+running_units=$(systemctl list-units --plain --no-legend --no-pager 'lsget.service' 'lsget@*.service')
+while read -r unit _; do
+  case "$unit" in
+    lsget.service|lsget@?*.service) systemctl stop "$unit" ;;
+  esac
+done <<< "$running_units"
 
-# Stop and disable main service
-if systemctl is-active --quiet lsget.service; then
-  echo "Stopping lsget.service..."
-  systemctl stop lsget.service
-fi
-
-if systemctl is-enabled --quiet lsget.service 2>/dev/null; then
-  echo "Disabling lsget.service..."
-  systemctl disable lsget.service
-fi
-
-# Stop and disable any templated instances
-for instance in /etc/systemd/system/multi-user.target.wants/lsget@*.service; do
-  if [ -f "$instance" ]; then
-    instance_name=$(basename "$instance")
-    echo "Stopping $instance_name..."
-    systemctl stop "$instance_name" 2>/dev/null || true
-    systemctl disable "$instance_name" 2>/dev/null || true
+installed_units=()
+for unit in lsget.service lsget@.service; do
+  if [ -f "/etc/systemd/system/$unit" ]; then
+    installed_units+=("$unit")
   fi
 done
+if ((${#installed_units[@]})); then
+  # Disabling the template also removes links for instances that never started.
+  systemctl --no-reload disable "${installed_units[@]}"
+  systemctl --runtime --no-reload disable "${installed_units[@]}"
+fi
 
-# Remove systemd service files
-echo "Removing systemd service files..."
-rm -f /etc/systemd/system/lsget.service
-rm -f /etc/systemd/system/lsget@.service
-
-# Reload systemd
-echo "Reloading systemd..."
+rm -f /etc/systemd/system/lsget.service /etc/systemd/system/lsget@.service
+if [ ! -L /etc/logrotate.d/lsget ] && cmp -s "$script_dir/lsget.logrotate" /etc/logrotate.d/lsget; then
+  rm /etc/logrotate.d/lsget
+fi
 systemctl daemon-reload
-systemctl reset-failed
 
-echo -e "${GREEN}Uninstallation complete!${NC}"
-echo ""
-echo -e "${YELLOW}Note: The following items were NOT removed:${NC}"
-echo "  - Binary: /usr/local/bin/lsget"
-echo "  - Configuration: /etc/default/lsget*"
-echo "  - Data directory: /var/lib/lsget"
-echo "  - Log directory: /var/log/lsget"
-echo "  - User: lsget"
-echo ""
-echo "To remove these manually:"
-echo "  sudo rm /usr/local/bin/lsget"
-echo "  sudo rm /etc/default/lsget*"
-echo "  sudo rm -rf /var/lib/lsget"
-echo "  sudo rm -rf /var/log/lsget"
-echo "  sudo userdel lsget"
+printf '%s\n' 'Removed the lsget systemd units. Configuration, data, logs, binary and user have been kept.'
