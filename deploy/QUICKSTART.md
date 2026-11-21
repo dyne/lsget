@@ -1,6 +1,6 @@
 # lsget native service quick start
 
-Use the recipe for your init system. Run the commands from the repository root. Build with Go 1.24.5 or later, or place your release binary at `./lsget` and start with the version check.
+Use the recipe for your init system. Run the commands from the repository root. Build with the Go toolchain pinned in [go.mod](../go.mod), or place your release binary at `./lsget` and start with the version check.
 
 ```sh
 go build -o lsget .

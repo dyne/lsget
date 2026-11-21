@@ -6,7 +6,7 @@ Fork [dyne/lsget](https://github.com/dyne/lsget), create a feature branch, and o
 
 ## Build and check a checkout
 
-From the repository root, use the Go version in [go.mod](go.mod), which CI uses and [mise.toml](mise.toml) mirrors. The commands below use Go's pinned linter. The first run may need to download tool dependencies. Use `gofmt` on any edited Go files.
+From the repository root, use the toolchain in [go.mod](go.mod), which CI uses and [mise.toml](mise.toml) mirrors. Run `mise install` or install the Go and golangci-lint versions listed in `mise.toml` on your PATH. Use `gofmt` on any edited Go files.
 
 ```sh
 go version
@@ -14,7 +14,7 @@ go build -o lsget .
 ./lsget -version
 go test -count=1 ./...
 go vet ./...
-go tool golangci-lint run ./...
+golangci-lint run ./...
 sh scripts/vendor-js.sh check
 ```
 

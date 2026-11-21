@@ -111,7 +111,7 @@ docker-compose logs -f
 ***
 ## 🎮 Quick start
 
-From the repository root, build the binary with Go 1.24.5 or later. If you downloaded a release, start with the version check.
+From the repository root, build the binary with the Go toolchain pinned in [go.mod](go.mod). If you downloaded a release, start with the version check.
 
 ```sh
 go build -o lsget .
@@ -193,7 +193,7 @@ The binary serves its embedded terminal shell for browsable directories. To edit
 
 Terminal controls live in `assets/js/terminal.js` and rendering helpers in `assets/js/terminal-view.js`. Rebuild with Go when editing either module. The embedded shell uses `Cache-Control: no-store` and loads its scripts and bundled favicon from `/assets/lsget-shell/<version>/`. The version is a SHA-256 digest of the shell and its assets. These assets can be cached for a year. After an upgrade, reloading the page gets the new shell and asset paths. A missing asset from an older version returns HTTP 404 until the page is reloaded.
 
-The browser dependency revisions, download sources, and license notices are documented in [assets/js/README.md](assets/js/README.md). Run `task vendor-check` to verify the checked-in files offline. Local setup with mise and the native CI and binary release jobs use Go 1.24.5. When changing the toolchain, update `go.mod` and `mise.toml` together.
+The browser dependency revisions, download sources, and license notices are documented in [assets/js/README.md](assets/js/README.md). Run `task vendor-check` to verify the checked-in files offline. The native CI and binary release jobs use the toolchain pinned in `go.mod`. When changing that toolchain, update `mise.toml` to match.
 
 A visible `index.html` in a served directory takes precedence over the terminal, including when the development template is enabled. Published HTML and its assets keep their own serving behavior. Active content hosted on the same origin can interact with the terminal and its APIs using the visitor’s browser session. Serve sites from a separate origin when their authors are outside the terminal’s trust boundary.
 
@@ -389,7 +389,7 @@ task docker-compose-rebuild
 
 To enhance security and reduce supply chain attacks, JavaScript dependencies are vendored locally:
 
-**Go dependencies**: lsget has **zero direct Go dependencies** - it uses only the Go standard library. All dependencies in `go.mod` are indirect and only for development tools (air, golangci-lint).
+**Go dependencies.** The server uses only the Go standard library. The dependencies in `go.mod` support the Air development tool.
 
 **JavaScript dependencies**: The following libraries are vendored locally and embedded in the binary:
 - `marked.min.js` - Markdown rendering library

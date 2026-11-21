@@ -17,7 +17,7 @@ tasks:
   lint:
     desc: Run golangci-lint on the codebase
     cmds:
-      - go tool golangci-lint run ./...
+      - golangci-lint run ./...
   test:
     desc: Run tests on the codebase
     cmds:
