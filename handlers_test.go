@@ -134,6 +134,122 @@ func TestHandleExec_BasicPwdHelp(t *testing.T) {
 	}
 }
 
+func TestHandleExec_PublicCommands(t *testing.T) {
+	s := newTestServer(t)
+	s.baseURL = "https://files.example.test/prefix"
+	if err := os.Mkdir(filepath.Join(s.rootAbs, "team docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"team docs/README.md":    "# Team docs\n",
+		"team docs/.hidden":      "hidden\n",
+		"team docs/note one.txt": "Alpha Beta\n",
+	} {
+		if err := os.WriteFile(filepath.Join(s.rootAbs, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const (
+		download = "/api/download?path=%2Fteam+docs%2Fnote+one.txt"
+		share    = "https://files.example.test/prefix/team%20docs/note%20one.txt"
+		hashes   = "MD5:    1570f3b486c8a35a4dce763227dc3d70\nSHA256: ed220039e906e32c27a646de68be9036c5020df646a82f3565a40bba6a6fdef2"
+	)
+	tests := []struct {
+		name       string
+		args       string
+		want       execResp
+		contains   string
+		wantReadme string
+	}{
+		{name: "help", want: execResp{Help: true}},
+		{name: "pwd", want: execResp{Output: "/", CWD: "/"}},
+		{name: "ls", args: ` -lh "/team docs"`, contains: "11B"},
+		{name: "dir", args: ` -a "/team docs"`, contains: "/team docs/.hidden"},
+		{name: "cd", args: ` "team docs"`, want: execResp{CWD: "/team docs", DocType: "markdown"}, wantReadme: "# Team docs\n"},
+		{name: "cat", args: ` "/team docs/note one.txt"`, want: execResp{Output: "Alpha Beta\n"}},
+		{name: "get", args: ` "/team docs/note one.txt"`, want: execResp{Download: download}},
+		{name: "rget", args: ` "/team docs/note one.txt"`, want: execResp{Download: download}},
+		{name: "wget", args: ` "/team docs/note one.txt"`, want: execResp{Download: download}},
+		{name: "download", args: ` "/team docs/note one.txt"`, want: execResp{Download: download}},
+		{name: "url", args: ` "/team docs/note one.txt"`, want: execResp{Clipboard: share}, contains: "URL copied to clipboard!"},
+		{name: "share", args: ` "/team docs/note one.txt"`, want: execResp{Clipboard: share}, contains: "URL copied to clipboard!"},
+		{name: "sum", args: ` "/team docs/note one.txt"`, want: execResp{Output: hashes}},
+		{name: "checksum", args: ` "/team docs/note one.txt"`, want: execResp{Output: hashes}},
+		{name: "tree", args: ` -L1 -a "/team docs"`, contains: "0 directories, 3 files"},
+		{name: "find", args: ` "/team docs" -name "note *.txt" -type f`, want: execResp{Output: colorWhite + "/team docs/note one.txt" + colorReset}},
+		{name: "grep", args: ` -rin "alpha beta" "/team docs"`, contains: "Alpha Beta"},
+		// The README lists stats, which currently reaches the unknown-command response.
+		{name: "stats", want: execResp{Output: "sh: stats: command not found"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := execJSON(t, s, test.name+test.args)
+			if test.contains != "" {
+				if !strings.Contains(got.Output, test.contains) {
+					t.Fatalf("output %q does not contain %q", got.Output, test.contains)
+				}
+				got.Output = ""
+			}
+			if test.want.Help {
+				if !strings.Contains(got.HTML, "Available commands") {
+					t.Fatalf("missing help in %q", got.HTML)
+				}
+				got.HTML = ""
+			}
+			if test.wantReadme != "" {
+				if got.Readme == nil || *got.Readme != test.wantReadme {
+					t.Fatalf("unexpected README: %+v", got)
+				}
+				got.Readme = nil
+			}
+			if got != test.want {
+				t.Fatalf("response: %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHandleExec_QuotedArgumentsAndErrors(t *testing.T) {
+	s := newTestServer(t)
+	for _, name := range []string{"two words.txt", "double\"quote.txt", "single'quote.txt"} {
+		if err := os.WriteFile(filepath.Join(s.rootAbs, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name, input, output string
+	}{
+		{"double_quotes", `cat "two words.txt"`, "two words.txt"},
+		{"single_quotes", `cat 'two words.txt'`, "two words.txt"},
+		{"double_quote_escape", `cat "double\"quote.txt"`, `double"quote.txt`},
+		{"single_quote_in_double_quotes", `cat "single'quote.txt"`, "single'quote.txt"},
+		{"unterminated_quote", `cat "two words.txt`, "two words.txt"},
+		{"empty_quoted_operand", `cat ""`, "cat: missing operand"},
+		{"empty_command", " \t ", ""},
+		{"unknown_command", `"two words"`, "sh: two words: command not found"},
+		{"ls_missing_file", `dir "missing name"`, "ls: cannot access 'missing name': No such file or directory"},
+		{"cd_missing_directory", `cd "missing name"`, "cd: no such file or directory"},
+		{"cd_on_file", `cd "two words.txt"`, "cd: not a directory"},
+		{"cat_missing_file", `cat "missing name"`, "cat: no such file or directory"},
+		{"download_missing_operand", "rget", "download: missing operand"},
+		{"download_no_matches", `wget "missing *.txt"`, "download: no matching files found"},
+		{"tree_on_file", `tree "two words.txt"`, "tree: not a directory"},
+		{"find_invalid_type", `find / -type "not a type"`, "find: invalid type filter (use 'f' for files or 'd' for directories)"},
+		{"grep_missing_pattern", "grep -in", "grep: missing pattern"},
+		{"grep_missing_file", `grep "two words" "missing name"`, "grep: missing name: no such file or directory"},
+		{"share_missing_operand", "share", "url: missing file operand"},
+		{"checksum_on_directory", "checksum /", "sum: is a directory"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := execJSON(t, s, test.input)
+			if want := (execResp{Output: test.output}); got != want {
+				t.Fatalf("response for %q: %+v, want %+v", test.input, got, want)
+			}
+		})
+	}
+}
+
 func TestHandleExec_LsCdCatAndErrors(t *testing.T) {
 	s := newTestServer(t)
 	// files
