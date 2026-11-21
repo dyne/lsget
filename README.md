@@ -29,7 +29,7 @@ Perfect for:
 
 | Capability           | Details |
 |----------------------|---------|
-| **TUI in browser**   | Full-screen Terminal User Interface with reactive updates powered by **[DataStar](https://github.com/starfederation/datastar)**; smooth keyboard handling & command history. |
+| **TUI in browser**   | Full-screen Terminal User Interface with keyboard handling, command history, and touch controls. |
 | **CDN-ready**        | Instantly serve files from any directory with shareable URLs and download capabilities. |
 | File operations      | `pwd`, `ls [-l] [-h]`, `cd DIR`, `cat FILE`, `download FILE`, `tree`, `find`, `grep`. |
 | Smart autocompletion | **Complete** suggests directories and files, with text and size limits for `cat` suggestions. |
@@ -171,6 +171,8 @@ Direct file links, exact-path downloads, and archive requests with an explicit d
 
 A method outside the route's list returns HTTP 405 with an `Allow` header. Each JSON request body must contain one object and fit within 8 KiB, including whitespace. An oversized body returns HTTP 413. Invalid JSON, extra JSON values and non-object bodies return HTTP 400.
 
+A successful `cd` through `/api/exec` includes the README preview by default. Use `/api/exec?readme=0` to omit the preview fields while keeping the new working directory. The preview is available separately from `/api/config?cwd=…`.
+
 JSON requests and `/api/config?path=…` accept same-origin browser requests. If the browser sends `Sec-Fetch-Site`, it must be `same-origin`. A supplied `Origin` must match the request's host, port and TLS scheme or the origin configured in `LSGET_BASEURL`. For an HTTPS-only proxy that preserves the public `Host` header, `LSGET_SECURE_SESSION_COOKIE=true` selects the HTTPS scheme. If the proxy rewrites `Host`, set `LSGET_BASEURL` to the public URL. Forwarding headers play no part in this check.
 
 CLI requests can omit `Origin` and `Sec-Fetch-Site`. When reusing an `sid` cookie without either header, send `Content-Type: application/json` with JSON requests and `X-Lsget-Request: 1` when setting the working directory through `/api/config?path=…`.
@@ -197,7 +199,9 @@ The browser dependency revisions, download sources, and license notices are docu
 
 A visible `index.html` in a served directory takes precedence over the terminal, including when the development template is enabled. Published HTML and its assets keep their own serving behavior. Active content hosted on the same origin can interact with the terminal and its APIs using the visitor’s browser session. Serve sites from a separate origin when their authors are outside the terminal’s trust boundary.
 
-The embedded terminal enforces a CSP. Each response supplies a nonce for its scripts and stylesheet, API requests stay on the same origin, and README images can use HTTP or HTTPS. Datastar compiles the shell’s `data-*` expressions with JavaScript’s `Function` constructor, so the enforced policy permits `'unsafe-eval'`. To trial a stricter policy on a development or staging listener, set `-shell-csp report-only`. This mode issues the proposed policy without `'unsafe-eval'` as a report-only header. Browser developer tools show the expected Datastar violations. Use the default `enforce` mode for deployments. The shell policy applies to the embedded terminal response. Published documents, files, and the generated `?nojs=1` directory listing keep their own response behavior.
+Terminal shows the desktop README alongside the listing. In compact Terminal, the README is requested when you open the reader. Markdown previews load the parser from the current versioned bundle. Published sites and development templates can still use `/assets/js/marked.min.js` and `/assets/js/datastar.js`.
+
+The embedded terminal enforces a CSP. Each response supplies a nonce for its scripts and stylesheet, API requests stay on the same origin, and README images can use HTTP or HTTPS. Set `-shell-csp report-only` on development or staging listeners to report violations without blocking content. The default `enforce` mode blocks violations on the embedded terminal response. Published documents, files, and the generated Files view keep their own response behavior.
 
 ### Configuration flags
 

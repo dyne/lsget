@@ -106,6 +106,27 @@ func TestReadmePreviewLimit(t *testing.T) {
 	}
 }
 
+func TestHandleExec_OmitReadme(t *testing.T) {
+	s := newTestServer(t)
+	writeWorkFixture(t, s.rootAbs, "docs/README.md", []byte("# Markdown preview\n"))
+	legacy := execJSON(t, s, "cd /docs")
+	if legacy.CWD != "/docs" || legacy.Readme == nil || *legacy.Readme != "# Markdown preview\n" || legacy.DocType != "markdown" {
+		t.Fatalf("default cd response changed: %+v", legacy)
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/api/exec?cwd=/&readme=0", strings.NewReader(`{"input":"cd /docs"}`))
+	w := httptest.NewRecorder()
+	s.handleExec(w, r)
+	var response map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	output, hasOutput := response["output"]
+	if w.Code != http.StatusOK || len(response) != 2 || response["cwd"] != "/docs" || !hasOutput || output != "" {
+		t.Fatalf("cd opt-out returned HTTP %d: %+v", w.Code, response)
+	}
+}
+
 func execJSON(t *testing.T, s *server, input string) execResp {
 	t.Helper()
 	body, _ := json.Marshal(execReq{Input: input})
@@ -653,7 +674,7 @@ func TestEmbeddedShellPolicy(t *testing.T) {
 		t.Fatal("embedded shell did not contain both script and style tags")
 	}
 	if first.Header().Get(reportOnly) != "" || first.Header().Get("Cache-Control") != "no-store" ||
-		!strings.Contains(policy, " 'unsafe-eval'") || strings.Contains(policy, "'unsafe-inline'") ||
+		!strings.Contains(policy, "script-src 'nonce-"+nonce+"';") ||
 		strings.Contains(second.Header().Get(enforced), nonce) {
 		t.Fatalf("unexpected enforcement or nonce reuse: %s", policy)
 	}

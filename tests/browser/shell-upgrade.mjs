@@ -3,20 +3,19 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer, request } from "node:http";
 
-const names = ["datastar.js", "marked.min.js", "terminal-view.js", "terminal.js"];
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 
-async function snapshot(origin) {
+async function snapshot(origin, entryNames, additionalNames) {
   const response = await fetch(origin + "/docs");
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   const html = await response.text();
   const entryPaths = [...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/gu)].map(match => match[1]);
-  assert.equal(entryPaths.length, 3);
+  assert.equal(entryPaths.length, entryNames.length);
   const base = entryPaths[0].replace(/[^/]+$/u, "");
   assert.match(base, /^\/assets\/lsget-shell\/[0-9a-f]{64}\/$/u);
-  assert.deepEqual([...entryPaths].sort(), names.filter(name => name !== "terminal-view.js").map(name => base + name));
-  const contentTypes = names.map(name => [name, "application/javascript; charset=utf-8"]);
+  assert.deepEqual([...entryPaths].sort(), entryNames.map(name => base + name).sort());
+  const contentTypes = [...entryNames, ...additionalNames].map(name => [name, "application/javascript; charset=utf-8"]);
   const icon = html.match(/<link rel="icon"[^>]* href="([^"]+)"/u);
   if (icon) {
     assert.equal(icon[1], base + "favicon.png");
@@ -50,8 +49,8 @@ async function snapshot(origin) {
 }
 
 export async function verifyShellUpgrade(t, cleanups, page, previous, current) {
-  const before = await snapshot(previous);
-  const after = await snapshot(current);
+  const before = await snapshot(previous, ["datastar.js", "marked.min.js", "terminal.js"], ["terminal-view.js"]);
+  const after = await snapshot(current, ["terminal.js"], ["terminal-view.js", "marked.min.js"]);
   assert.notEqual(before.base, after.base);
 
   // Cross-release requests must fail even if an unchanged file has an ETag
@@ -103,7 +102,7 @@ export async function verifyShellUpgrade(t, cleanups, page, previous, current) {
   // The icon has its own HTTP checks above. Chrome can request it after the
   // terminal is ready, which is the boundary for the script-cache assertions.
   const assetResponses = () => responses.filter(row => row.path.startsWith("/assets/lsget-shell/") && row.path.endsWith(".js"));
-  const paths = snapshot => names.map(name => snapshot.assets[name].path);
+  const paths = snapshot => Object.values(snapshot.assets).map(asset => asset.path).filter(path => path.endsWith(".js"));
   const assertAssets = (expected, status) => {
     assert.deepEqual(assetResponses().map(row => row.path).sort(), [...expected].sort());
     assert.ok(assetResponses().every(row => row.status === status));
@@ -140,12 +139,41 @@ export async function verifyShellUpgrade(t, cleanups, page, previous, current) {
     await page.open(address + "/docs?refreshed-shell");
     await page.wait(appReady("?refreshed-shell"));
     assertAssets(paths(after), 200);
+
+    // A compact shell can remain open across a restart before requesting its
+    // parser. A different build must reject that versioned URL, and a reopen
+    // must be able to retry it when the correct build is serving again.
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    responses.length = 0;
+    await page.open(address + "/docs?view=terminal&lazy-upgrade");
+    await page.wait('location.search === "?view=terminal&lazy-upgrade" && document.querySelector("#transcript .clickable-file")');
+    const parser = after.assets["marked.min.js"].path;
+    assertAssets(paths(after).filter(path => path !== parser), 200);
+
+    upstream = new URL(previous);
+    responses.length = 0;
+    const toggle = () => page.evaluate('document.getElementById("readme-toggle").click()');
+    await toggle();
+    await page.wait('document.querySelector("#readme button")?.textContent === "Retry README"');
+    assertAssets([parser], 404);
+    assert.equal(await page.evaluate('document.querySelector("#directory-error").hidden'), true);
+
+    await toggle();
+    await page.wait('!history.state?.readme && document.querySelector("#readme").inert');
+    upstream = new URL(current);
+    responses.length = 0;
+    await toggle();
+    await page.wait(appReady("?view=terminal&lazy-upgrade"));
+    assertAssets([parser], 200);
   } finally {
+    await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await page.send("Emulation.clearDeviceMetricsOverride");
     await page.send("Network.setCacheDisabled", { cacheDisabled: false });
     await page.send("Network.disable");
   }
   t.diagnostic(JSON.stringify({
     previous: before.assets, current: after.assets,
-    observed: ["old-cache-hit", "upgraded-shell", "stale-shell-assets-rejected", "refreshed-shell"],
+    observed: ["old-cache-hit", "upgraded-shell", "stale-shell-assets-rejected", "refreshed-shell", "stale-lazy-parser-rejected", "parser-retried-on-reopen"],
   }));
 }

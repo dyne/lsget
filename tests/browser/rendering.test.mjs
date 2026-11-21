@@ -1,4 +1,6 @@
 // Run with LSGET_BINARY=/absolute/path/to/lsget node --test tests/browser/rendering.test.mjs.
+// LSGET_PREVIOUS_SHELL_BINARY checks cache compatibility with the prior release.
+// LSGET_PLAN_BASELINE_BINARY adds the throttled first-listing comparison.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -10,6 +12,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { verifyShellUpgrade } from "./shell-upgrade.mjs";
+import { compareFirstListing, createSharedJourneyFixture, verifySharedJourney } from "./shared-journey.mjs";
 
 async function until(probe, description) {
   const deadline = Date.now() + 8_000;
@@ -45,7 +48,7 @@ function start(cleanups, command, args, cwd, env = process.env) {
   };
 }
 
-async function browserPage(cleanups, scratch) {
+async function browserPage(cleanups, scratch, fontSize) {
   const deniedRequests = [];
   const proxy = createHTTPServer((request, response) => {
     deniedRequests.push(request.url);
@@ -63,6 +66,14 @@ async function browserPage(cleanups, scratch) {
     proxy.closeAllConnections();
   }));
   const profile = join(scratch, "chrome");
+  if (fontSize) {
+    const defaults = join(profile, "Default");
+    await mkdir(defaults, { recursive: true });
+    // A profile preference survives a browser history traversal across SVG and HTML documents.
+    await writeFile(join(defaults, "Preferences"), JSON.stringify({ webkit: { webprefs: {
+      default_font_size: fontSize, default_fixed_font_size: fontSize,
+    } } }));
+  }
   const running = start(cleanups, process.env.CHROME_BIN || "google-chrome", [
     ...(process.env.LSGET_TEST_HEADFUL
       ? ["--ozone-platform=x11", "--force-renderer-accessibility", "--window-size=1280,900"] : ["--headless"]),
@@ -92,10 +103,26 @@ async function browserPage(cleanups, scratch) {
   let id = 0;
   const pending = new Map();
   const policyMessages = [];
+  const network = [];
   socket.addEventListener("message", (event) => {
     const response = JSON.parse(event.data);
     if (response.method === "Log.entryAdded" && response.params.entry.source === "security") {
       policyMessages.push(response.params.entry.text);
+    }
+    const params = response.params;
+    switch (response.method) {
+      case "Network.requestWillBeSent":
+        network.push({ event: "request", id: params.requestId, time: params.timestamp, type: params.type, url: params.request.url });
+        break;
+      case "Network.responseReceived":
+        network.push({ event: "response", id: params.requestId, time: params.timestamp, status: params.response.status, url: params.response.url });
+        break;
+      case "Network.loadingFinished":
+        network.push({ event: "complete", id: params.requestId, time: params.timestamp, bytes: params.encodedDataLength });
+        break;
+      case "Network.loadingFailed":
+        network.push({ event: "failed", id: params.requestId, time: params.timestamp, reason: params.errorText });
+        break;
     }
     pending.get(response.id)?.(response);
   });
@@ -138,10 +165,41 @@ async function browserPage(cleanups, scratch) {
     send,
     deniedRequests,
     policyMessages,
+    network,
     wait(expression) {
       return until(() => evaluate(expression), expression);
     },
   };
+}
+
+function browserControls(page) {
+  async function key(key, windowsVirtualKeyCode, modifiers = 0) {
+    const options = { key, code: key, windowsVirtualKeyCode, modifiers };
+    const text = key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {};
+    await page.send("Input.dispatchKeyEvent", { type: "keyDown", ...options, ...text });
+    await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...options });
+  }
+
+  async function tap(selector) {
+    const point = await page.evaluate(selector => {
+      const { left, top, width, height } = document.querySelector(selector).getBoundingClientRect();
+      return { x: left + width / 2, y: top + height / 2 };
+    }, selector);
+    await page.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+    await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  }
+
+  async function center(selector) {
+    await page.evaluate(selector => document.querySelector(selector).scrollIntoView({ block: "center" }), selector);
+  }
+
+  async function capture(label) {
+    if (!process.env.LSGET_SCREENSHOTS) return;
+    const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    await writeFile(join(process.env.LSGET_SCREENSHOTS, label + ".png"), Buffer.from(data, "base64"));
+  }
+
+  return { key, tap, center, capture };
 }
 
 async function testAddress() {
@@ -226,6 +284,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
   });
   const site = join(scratch, "served");
   const { file, punctuation, touchPath, touchChild } = await fixture(site);
+  await createSharedJourneyFixture(site);
   const workA = join(scratch, "work-a");
   const workB = join(scratch, "work-b");
   await mkdir(workA);
@@ -235,31 +294,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
   const origin = await startServer(cleanups, binary, site, workA, mode);
 
   const page = await browserPage(cleanups, scratch);
-  async function key(key, windowsVirtualKeyCode, modifiers = 0) {
-    const options = { key, code: key, windowsVirtualKeyCode, modifiers };
-    const text = key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {};
-    await page.send("Input.dispatchKeyEvent", { type: "keyDown", ...options, ...text });
-    await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...options });
-  }
-
-  async function tap(selector) {
-    const point = await page.evaluate(selector => {
-      const { left, top, width, height } = document.querySelector(selector).getBoundingClientRect();
-      return { x: left + width / 2, y: top + height / 2 };
-    }, selector);
-    await page.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
-    await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  }
-
-  async function center(selector) {
-    await page.evaluate(selector => document.querySelector(selector).scrollIntoView({ block: "center" }), selector);
-  }
-
-  async function capture(label) {
-    if (!process.env.LSGET_SCREENSHOTS) return;
-    const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-    await writeFile(join(process.env.LSGET_SCREENSHOTS, label + ".png"), Buffer.from(data, "base64"));
-  }
+  const { key, tap, center, capture } = browserControls(page);
 
   function readingColors(selectors, outlineBackdrop = null) {
     return page.evaluate((selectors, outlineBackdrop) => {
@@ -318,18 +353,20 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     }, selectors, outlineBackdrop);
   }
 
-  function holdNavigationResponses() {
+  function holdNavigationResponses(initiallyHeld = []) {
     return page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: "(" + function () {
+      source: "(" + function (initiallyHeld) {
         const fetchPage = window.fetch.bind(window);
         const holds = new Map();
-        const armed = new Set();
+        const armed = new Set(initiallyHeld);
+        const failures = new Set();
         const requests = [];
         const settled = new Set();
         window.navigationFixture = {
           arm(key) { armed.add(key); },
+          fail(key) { failures.add(key); },
           release(key) { holds.get(key)?.(); },
-          releaseAll() { holds.forEach(release => release()); armed.clear(); },
+          releaseAll() { holds.forEach(release => release()); armed.clear(); failures.clear(); },
           holds, requests, settled,
         };
         window.fetch = async (url, options) => {
@@ -338,6 +375,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
           const key = pathname === "/api/config" ? "config " + searchParams.get("cwd")
             : pathname === "/api/complete" ? "completion" : data?.input;
           requests.push(pathname);
+          if (failures.delete(key)) return new Response("Fixture unavailable", { status: 503 });
           const response = await fetchPage(url, options);
           if (armed.delete(key)) {
             // Buffer the response so aborting the original network request
@@ -350,7 +388,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
           }
           return response;
         };
-      }.toString() + ")()",
+      }.toString() + ")(" + JSON.stringify(initiallyHeld) + ")",
     });
   }
 
@@ -573,7 +611,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
           await measure(files, [".up:focus-visible"], "focus-visible");
 
           await page.open(origin + "/legibility?view=terminal&size=" + size);
-          await page.wait('document.querySelector("#readme h1")?.textContent === "Shared notes" && document.querySelector("#transcript .clickable-file")');
+          await page.wait('document.querySelector("#transcript .clickable-file")');
           await page.evaluate(async () => {
             await new Promise(requestAnimationFrame);
             document.getElementById("transcript").scrollTop = 0;
@@ -587,6 +625,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
             await tap("#readme-toggle");
             await page.wait('!document.getElementById("readme").inert');
           }
+          await page.wait('document.querySelector("#readme h1")?.textContent === "Shared notes"');
           await measure(reader, [
             "#readme a", "#readme h1", "#readme h2", "#readme h3", "#readme h4", "#readme h5", "#readme h6",
             "#readme blockquote", "#readme code", "#readme strong", "#readme em", "#readme th",
@@ -703,7 +742,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       await page.wait('location.search === "?navigation-fixture=1" && !!window.navigationFixture');
       await directoryIs("/docs", "Markdown fixture");
       await page.wait('document.querySelector("#transcript .clickable-file")');
-      assert.deepEqual(await page.evaluate("navigationFixture.requests"), ["/api/config", "/api/exec"]);
+      assert.deepEqual(await page.evaluate("navigationFixture.requests"), ["/api/exec", "/api/config"]);
       const historyLength = await page.evaluate("history.length");
 
       await page.evaluate('navigationFixture.arm("cd /rst")');
@@ -832,12 +871,12 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     try {
       await page.send("Network.emulateNetworkConditions", { offline: true, ...connection });
       await page.evaluate("history.back()");
-      await page.wait('location.pathname === "/docs" && !document.querySelector("#directory-error").hidden');
+      await page.wait('location.pathname === "/docs" && !document.querySelector("#directory-error").hidden && document.querySelector("#readme button")');
       assert.deepEqual(await page.evaluate(() => [
         document.querySelector("#command-prompt").textContent,
-        document.querySelector("#readme").textContent,
+        document.querySelector("#readme [role=status]").textContent,
         document.activeElement?.id,
-      ]), ["guest@browser:/docs$ ", "", "command"]);
+      ]), ["guest@browser:/docs$ ", "Could not load the README.", "command"]);
       await command("pwd");
       await page.wait('document.querySelector("#transcript").textContent.includes("Could not run the command")');
       await expectSpeech("Could not run the command");
@@ -1021,8 +1060,9 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
           const size = 16 * percent / 100;
           const token = width + "x800-" + percent;
           await page.send("Page.setFontSizes", { fontSizes: { standard: size, fixed: size } });
-          await page.open(origin + "/docs?matrix=" + token);
-          await page.wait('location.search === ' + JSON.stringify("?matrix=" + token) + ' && document.querySelector("#readme h1")?.textContent === "Markdown fixture"');
+          const search = (mobile ? "?view=terminal&" : "?") + "matrix=" + token;
+          await page.open(origin + "/docs" + search);
+          await page.wait('location.search === ' + JSON.stringify(search) + ' && document.querySelector("#transcript .clickable-file")');
           if (mobile) await tap("#command");
           assert.equal(await page.evaluate("document.activeElement.id"), "command");
           await page.send("Input.insertText", { text: "cat read" });
@@ -1091,6 +1131,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
             await key("Tab", 9);
             await key("Tab", 9);
           }
+          await page.wait('document.querySelector("#readme h1")?.textContent === "Markdown fixture"');
           assert.equal(await page.evaluate("document.activeElement.id"), "readme");
           const documentMetrics = await page.evaluate(() => {
             const readme = document.querySelector("#readme");
@@ -1127,9 +1168,10 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       for (const [width, height] of [[320, 640], [390, 844], [844, 390]]) {
         const viewport = width + "x" + height;
         await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
-        await page.open(origin + "/docs?touch-command=" + viewport);
-        await page.wait('location.search === ' + JSON.stringify("?touch-command=" + viewport) +
-          ' && document.querySelector("#readme h1")?.textContent === "Markdown fixture"');
+        const search = "?view=terminal&touch-command=" + viewport;
+        await page.open(origin + "/docs" + search);
+        await page.wait('location.search === ' + JSON.stringify(search) +
+          ' && document.querySelector("#transcript .clickable-file")');
         await page.evaluate(() => {
           window.submitTaps = [];
           const run = document.getElementById("run-command");
@@ -1178,6 +1220,124 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     }
   });
 
+  await t.test("README and Markdown wait for compact reader intent without delaying browsing", async () => {
+    const opening = 'document.querySelector("#readme [role=status]")?.textContent === "Loading README…"';
+    const closed = '!history.state?.readme && document.querySelector("#readme").inert';
+    const markdown = 'document.querySelector("#readme h1")?.textContent === "Markdown fixture"';
+    const toggle = "#readme-toggle";
+    const downloadPath = join(scratch, "lazy-reader-downloads");
+    const phases = [];
+    const requests = () => page.network.filter(event => event.event === "request").map(event => new URL(event.url));
+    const configs = path => requests().filter(url => url.pathname === "/api/config" && url.searchParams.get("cwd") === path);
+    const parsers = () => requests().filter(url => url.pathname.endsWith("/marked.min.js"));
+    const mark = label => phases.push({ label, endEvent: page.network.length });
+
+    await mkdir(downloadPath);
+    await page.send("Page.enable");
+    const instrumentation = await holdNavigationResponses(["config /docs"]);
+    await page.send("Network.enable");
+    await page.send("Network.setCacheDisabled", { cacheDisabled: true });
+    await page.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath });
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    page.network.length = 0;
+    try {
+      await page.open(origin + "/docs?view=files&lazy-reader=files");
+      await page.wait('location.search.endsWith("lazy-reader=files") && document.querySelector(".file-row")');
+      assert.ok(!requests().some(url => url.pathname.startsWith("/api/")));
+      assert.equal(parsers().length, 0);
+      mark("files-no-readme-or-parser");
+
+      await page.open(origin + "/docs?view=terminal&lazy-reader=compact");
+      await page.wait('location.search.endsWith("lazy-reader=compact") && document.querySelector("#transcript .clickable-file")');
+      assert.equal(configs("/docs").length, 0);
+      assert.equal(parsers().length, 0);
+      assert.equal(await page.evaluate("typeof globalThis.marked"), "undefined");
+      assert.equal(await page.evaluate(closed), true);
+      await capture("lazy-reader-390-before");
+      mark("compact-listing-before-open");
+
+      await tap(toggle);
+      await page.wait(opening + ' && navigationFixture.holds.has("config /docs")');
+      assert.equal(configs("/docs").length, 1);
+      assert.equal(parsers().length, 0);
+      mark("compact-readme-response-held");
+      await tap(toggle);
+      await page.wait(closed);
+      await command("get read-me-one.txt");
+      await until(async () => (await readdir(downloadPath)).includes("read-me-one.txt"), "completed download during pending README");
+      assert.equal(await readFile(join(downloadPath, "read-me-one.txt"), "utf8"), "First path suggestion opened.");
+      mark("download-while-readme-held");
+
+      await tap(toggle);
+      await page.wait(opening);
+      assert.equal(await page.evaluate('navigationFixture.requests.filter(path => path === "/api/config").length'), 1);
+      await page.evaluate('navigationFixture.release("config /docs")');
+      await page.wait(markdown + ' && navigationFixture.holds.size === 0 && document.querySelector("#readme").getBoundingClientRect().top <= 1');
+      assert.equal(parsers().length, 1);
+      assert.equal(parsers()[0].pathname, await page.evaluate(() => new URL("./marked.min.js", document.getElementById("terminal-script").src).pathname));
+      await capture("lazy-reader-390-after");
+      mark("compact-opened-with-versioned-parser");
+
+      await tap(toggle);
+      await page.wait(closed);
+      await command("cd /rst");
+      await page.wait('location.pathname === "/rst" && document.querySelector("#command-prompt").textContent === "guest@browser:/rst$ "');
+      assert.equal(configs("/rst").length, 0);
+      assert.equal(await page.evaluate('document.querySelector("#readme h1")'), null);
+      assert.ok(requests().some(url => url.pathname === "/api/exec" && url.searchParams.get("readme") === "0"));
+      mark("compact-changed-directory-without-preview");
+
+      await page.evaluate('navigationFixture.fail("config /rst")');
+      await tap(toggle);
+      await page.wait('document.querySelector("#readme [role=status]")?.textContent === "Could not load the README."' +
+        ' && document.querySelector("#readme").getBoundingClientRect().top <= 1');
+      assert.equal(await page.evaluate('document.querySelector("#directory-error").hidden'), true);
+      await key("Tab", 9);
+      const [retryFocus] = await readingColors(["#readme button:focus-visible"], "#readme");
+      assert.ok(retryFocus?.visible && retryFocus.outline === "solid" && retryFocus.outlineWidth >= 2 && retryFocus.outlineRatio >= 3);
+      assert.equal(await page.evaluate('getComputedStyle(document.activeElement).outlineOffset'), "2px");
+      phases.push({ label: "keyboard-retry-focus", endEvent: page.network.length, retryFocus });
+      await capture("lazy-reader-390-retry-focus");
+      await tap("#readme button");
+      await page.wait('document.querySelector("#readme h1")?.textContent === "RST fixture"');
+      assert.equal(await page.evaluate('document.activeElement.id'), "readme");
+      assert.equal(parsers().length, 1);
+      assert.equal(await page.evaluate('navigationFixture.requests.filter(path => path === "/api/config").length'), 3);
+      mark("compact-api-failure-and-retry");
+
+      await tap(toggle);
+      await page.wait(closed);
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+      await page.open(origin + "/docs?view=terminal&lazy-reader=desktop");
+      await page.wait('location.search.endsWith("lazy-reader=desktop") && navigationFixture.holds.has("config /docs")');
+      await page.wait(opening + ' && document.querySelector("#transcript .clickable-file")');
+      assert.deepEqual(await page.evaluate("navigationFixture.requests"), ["/api/exec", "/api/config"]);
+      assert.equal(parsers().length, 1);
+      mark("desktop-listing-before-held-readme");
+      await page.evaluate('navigationFixture.release("config /docs")');
+      await page.wait(markdown + ' && navigationFixture.holds.size === 0');
+      assert.equal(parsers().length, 2);
+      mark("desktop-readme-rendered");
+      t.diagnostic("Files and compact Terminal started with no README or parser. Compact Download completed while README was held, reopening reused the request, and API retry rendered the new directory. Desktop listed while README was held.");
+    } finally {
+      try {
+        await releaseNavigationResponses(instrumentation);
+        if (process.env.LSGET_SCREENSHOTS) {
+          await writeFile(join(process.env.LSGET_SCREENSHOTS, "lazy-reader-network.json"), JSON.stringify({ mode, phases, events: page.network }, null, 2));
+        }
+      } finally {
+        await page.send("Browser.setDownloadBehavior", { behavior: "default" });
+        await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+        await page.send("Emulation.clearDeviceMetricsOverride");
+        await page.send("Network.setCacheDisabled", { cacheDisabled: false });
+        await page.send("Network.disable");
+        await page.send("Page.disable");
+      }
+    }
+  });
+
   await t.test("Compact README history closes before leaving the folder and keeps focus available", async () => {
     const parent = "/reader-navigation";
     const child = parent + "/chapter";
@@ -1190,8 +1350,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     const toggle = "#readme-toggle";
     const childLink = '.clickable-file[data-file=' + JSON.stringify(child) + ']';
     const inFolder = path => 'location.pathname === ' + JSON.stringify(path) +
-      ' && document.querySelector("#readme h1")?.textContent === ' +
-      JSON.stringify(path === parent ? "Reader parent" : "Reader chapter");
+      ' && document.querySelector("#command-prompt")?.textContent === ' + JSON.stringify("guest@browser:" + path + "$ ");
     const blocking = 'document.querySelector(".terminal").inert';
     const readmeVisible = 'document.querySelector("#readme").classList.contains("show")';
     const toggleFocused = 'document.activeElement?.id === "readme-toggle"';
@@ -1216,7 +1375,8 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
 
     async function readmeOpened(path) {
       await page.wait(inFolder(path) + ' && ' + blocking + ' && ' + readmeVisible +
-        ' && document.querySelector("#readme").getBoundingClientRect().top <= 1');
+        ' && document.querySelector("#readme").getBoundingClientRect().top <= 1' +
+        ' && document.querySelector("#readme h1")?.textContent === ' + JSON.stringify(path === parent ? "Reader parent" : "Reader chapter"));
       assert.deepEqual(await page.evaluate(() => {
         const button = document.getElementById("readme-toggle");
         const { width, height } = button.getBoundingClientRect();
@@ -1289,23 +1449,27 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       t.diagnostic("Portrait-to-landscape rotation kept the reader and focus; widening to desktop consumed the overlay entry.");
 
       await viewport(390, 844);
-      await enterChild("stale-config");
-      await tap(toggle);
-      await readmeOpened(child);
+      await startAtParent("stale-config");
       await page.evaluate(path => navigationFixture.arm("config " + path), parent);
-      await go(-2);
+      await tap(toggle);
       await page.wait('location.pathname === ' + JSON.stringify(parent) +
         ' && navigationFixture.holds.has(' + JSON.stringify("config " + parent) + ')');
-      assert.equal(await page.evaluate(blocking), false);
-      await go(1);
-      await readmeClosed(child);
+      await go(-1);
+      await readmeClosed(parent);
+      await center(childLink);
+      await tap(childLink);
+      await page.wait(inFolder(child) + ' && ' + entryClosed);
+      await readmeClosed(child, { restoreFocus: false });
+      assert.equal(await page.evaluate('document.activeElement.id'), "transcript");
+      await tap(toggle);
+      await readmeOpened(child);
       await page.evaluate(async path => {
         navigationFixture.release("config " + path);
         await new Promise(requestAnimationFrame);
       }, parent);
       assert.deepEqual(await page.evaluate("Array.from(navigationFixture.settled)"), ["config " + parent]);
-      await readmeClosed(child);
-      await go(-1);
+      await readmeOpened(child);
+      await go(-2);
       await readmeClosed(parent);
       await go(2);
       await readmeClosed(child, { baseEntry: false });
@@ -1799,7 +1963,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
         assert.equal(await page.evaluate('new URL(location.href).searchParams.get("view")'), "files");
         for (const selector of [".up", "#files-view", "#terminal-view"]) await focus(label, selector);
         await key("Enter", 13);
-        await page.wait('document.querySelector("#readme h1")?.textContent === "Keyboard guide"');
+        await page.wait('document.querySelector("#transcript .clickable-file")');
         await view(label, "terminal");
         const terminal = await snapshot(label, "terminal");
         const terminalOrder = expectOrder(terminal, [
@@ -1820,7 +1984,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
         await readerToggleFocus(label, "body");
         await key("Enter", 13);
         const openedReader = 'history.state?.readme === true && document.activeElement.id === "readme"';
-        await page.wait(openedReader);
+        await page.wait(openedReader + ' && document.querySelector("#readme h1")?.textContent === "Keyboard guide"');
         const readerGeometry = await page.evaluate(() => {
           const panel = document.getElementById("readme");
           const text = document.createRange();
@@ -1945,6 +2109,116 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     }
   });
 
+  await t.test("Cold directory entry selects Files before requesting Terminal assets", async () => {
+    const publicBase = "https://public.example/releases%20here";
+    const directoryServer = () => startServer(cleanups, binary, site, workA, mode, "", ["-baseurl", publicBase]);
+    const address = await directoryServer();
+    const visible = view => view === "terminal"
+      ? `document.querySelector("#command-prompt")?.textContent === ${JSON.stringify("guest@browser:" + touchChild + "$ ")}`
+      : `document.querySelector("main h1")?.textContent === ${JSON.stringify("Index of " + touchChild)}`;
+    const shellScripts = ["terminal-view.js", "terminal.js"];
+    const icon = await readFile(new URL("../../internal/lsget/assets/favicon.png", import.meta.url));
+    const query = "keep=two%26words&keep=second&flag=&file=view-selected.txt";
+    const traces = [];
+
+    async function viewport(width, height, touch) {
+      await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: touch });
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: touch });
+    }
+
+    async function verify(label, view, expectedSearch, navigate, hash = "") {
+      await page.send("Network.clearBrowserCache");
+      page.network.length = 0;
+      const trace = { label, view };
+      traces.push(trace);
+      try {
+        await navigate();
+        await page.wait(visible(view) + ' && document.readyState === "complete"');
+        Object.assign(trace, await page.evaluate(() => ({
+          search: location.search, hash: location.hash, viewport: [innerWidth, innerHeight],
+          coarse: matchMedia("(any-pointer: coarse)").matches, canonical: document.querySelector('link[rel="canonical"]').href,
+          icon: document.querySelector('link[rel="icon"]')?.href,
+        })));
+        await capture("entry-" + label);
+      } finally {
+        trace.events = [...page.network];
+      }
+      assert.equal(trace.search, expectedSearch);
+      assert.equal(trace.hash, hash);
+      assert.equal(trace.canonical, publicBase + touchChild);
+      const requests = trace.events.filter(event => event.event === "request");
+      const bundle = requests.filter(event => new URL(event.url).pathname.startsWith("/assets/lsget-shell/"));
+      if (view === "terminal") {
+        assert.deepEqual(bundle.filter(event => event.type === "Script").map(event => new URL(event.url).pathname.split("/").at(-1)).sort(), shellScripts);
+        assert.match(trace.icon, /\/assets\/lsget-shell\/[a-f0-9]{64}\/favicon\.png$/u);
+      } else {
+        assert.deepEqual(bundle, []);
+        assert.equal(trace.icon, "data:image/png;base64," + icon.toString("base64"));
+        assert.ok(!requests.some(event => /^\/(api\/|assets\/js\/|favicon\.ico$)/u.test(new URL(event.url).pathname)), label);
+      }
+      t.diagnostic(`${label}: ${trace.viewport.join("x")}, coarse=${trace.coarse}, ${view}, ${requests.length} cold requests, ${bundle.length} shell assets`);
+      return trace;
+    }
+
+    await page.send("Network.enable");
+    await page.send("Network.setCacheDisabled", { cacheDisabled: true });
+    try {
+      for (const [width, height, touch] of [[320, 640, true], [390, 844, true], [844, 390, true], [1280, 800, false], [390, 844, false]]) {
+        await viewport(width, height, touch);
+        // A fresh origin avoids serving the same Terminal URL from the current history entry.
+        const entry = touch ? address : await directoryServer();
+        const observed = await verify(`${width}x${height}-${touch ? "touch" : "pointer"}`, touch ? "files" : "terminal",
+          touch ? "?flag=&keep=two%26words&keep=second&view=files" : "?" + query,
+          () => page.open(entry + touchChild + "?" + query + "#shared"), "#shared");
+        assert.deepEqual(observed.viewport, [width, height]);
+        assert.equal(observed.coarse, touch);
+      }
+
+      await viewport(390, 844, true);
+      await verify("explicit-terminal", "terminal", "?view=terminal&" + query,
+        () => page.open(address + touchChild + "?view=terminal&" + query));
+      await verify("explicit-nojs", "files", "?view=terminal&nojs=1&" + query,
+        () => page.open(address + touchChild + "?view=terminal&nojs=1&" + query));
+      await page.send("Emulation.setScriptExecutionDisabled", { value: true });
+      await verify("disabled-scripts", "files", "?flag=&keep=two%26words&keep=second&nojs=1",
+        () => page.open(address + touchChild + "?" + query));
+      await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+
+      await page.open(address + "/docs/guide/");
+      await page.wait('document.querySelector("h1")?.textContent === "Published guide"');
+      const before = await page.send("Page.getNavigationHistory");
+      await page.evaluate(href => {
+        const link = document.createElement("a");
+        link.href = href;
+        link.textContent = "Shared directory";
+        document.body.append(link);
+        link.focus();
+      }, address + touchChild + "?" + query + "#shared");
+      const shared = await verify("nested-shared-link", "files", "?flag=&keep=two%26words&keep=second&view=files",
+        () => key("Enter", 13), "#shared");
+      const after = await page.send("Page.getNavigationHistory");
+      // Chrome can evict the oldest entry when navigation history is full.
+      shared.history = { source: before.entries[before.currentIndex], previous: after.entries[after.currentIndex - 1] };
+      assert.equal(shared.history.previous?.id, shared.history.source.id);
+      await page.evaluate("history.back()");
+      await page.wait('location.pathname === "/docs/guide/" && document.querySelector("h1")?.textContent === "Published guide"');
+      shared.history.afterBack = await page.evaluate("location.href");
+
+      await viewport(1280, 800, false);
+      await verify("explicit-files", "files", "?view=files&" + query,
+        () => page.open(address + touchChild + "?view=files&" + query));
+    } finally {
+      if (process.env.LSGET_SCREENSHOTS) {
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "entry-network.json"), JSON.stringify({ mode, traces }, null, 2));
+      }
+      await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+      await page.send("Network.setCacheDisabled", { cacheDisabled: false });
+      await page.send("Network.disable");
+    }
+  });
+
   await t.test("Embedded shell, explicit override, and publishing use their intended responses", async () => {
     assert.deepEqual(await readdir(workA), []);
     const second = await startServer(cleanups, binary, site, workB, mode);
@@ -1955,12 +2229,10 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       const reportOnly = response.headers.get("Content-Security-Policy-Report-Only");
       if (mode === "report-only") {
         assert.equal(enforced, null);
-        assert.doesNotMatch(reportOnly, /'unsafe-eval'/u);
-        assert.match(reportOnly, /script-src 'nonce-/u);
+        assert.match(reportOnly, /script-src 'nonce-[^']+';/u);
       } else {
         assert.equal(reportOnly, null);
-        assert.match(enforced, /script-src 'nonce-[^']+' 'unsafe-eval'/u);
-        assert.doesNotMatch(enforced, /'unsafe-inline'/u);
+        assert.match(enforced, /script-src 'nonce-[^']+';/u);
       }
     }
     const override = await startServer(cleanups, binary, site, workB, mode, "index.html");
@@ -2005,7 +2277,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     assert.ok(initial.includes(`<meta property="og:image" content="${previewURL.replace("&", "&amp;")}" />`));
 
     await page.open(custom + path);
-    await page.wait(`document.title === ${JSON.stringify(title)}`);
+    await page.wait(`document.title === ${JSON.stringify(title)} && document.querySelector('link[rel="icon"]')`);
     const data = await page.evaluate(() => ({
       title: document.title,
       ogTitle: document.querySelector('meta[property="og:title"]').content,
@@ -2025,6 +2297,31 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     assert.deepEqual(Buffer.from(await icon.arrayBuffer()), await readFile(new URL("../../internal/lsget/assets/favicon.png", import.meta.url)));
     assert.equal(previewRequests, 0, "The metadata response must not fetch the preview image");
     assert.deepEqual(await readdir(workA), []);
+  });
+
+  await t.test("Shared directory links complete Files, README and archive journeys", async t => {
+    await verifySharedJourney(t, { page, origin, scratch, mode, capture, tap, center, key, until });
+  });
+
+  await t.test("The shared directory journey works at 200 percent text", async t => {
+    const largePage = await browserPage(cleanups, join(scratch, "large-text-browser"), 32);
+    await verifySharedJourney(t, { page: largePage, origin, scratch, mode, ...browserControls(largePage), until, largeText: true });
+  });
+
+  await t.test("The nonce-only shell policy covers the native controls and lazy parser", async () => {
+    const policyMessages = () => page.policyMessages.filter(message => /Content Security Policy/u.test(message));
+    await page.open(origin + "/docs?policy-fixture");
+    await page.wait('location.search === "?policy-fixture" && document.querySelector("#readme h1")?.textContent === "Markdown fixture"');
+    assert.deepEqual(policyMessages(), []);
+    await page.evaluate(() => {
+      const script = document.createElement("script");
+      script.textContent = "window.policyFixtureRan = true";
+      document.head.append(script);
+    });
+    await until(() => policyMessages().length > 0, "nonce-free script policy message");
+    assert.equal(await page.evaluate("window.policyFixtureRan === true"), mode === "report-only");
+    assert.ok(policyMessages().every(message => /inline/iu.test(message) && /report.only/iu.test(message) === (mode === "report-only")));
+    t.diagnostic(`${mode}: native shell and lazy parser ran with no policy violations; a nonce-free inline script generated the expected policy report.`);
   });
 
   if (process.env.LSGET_PREVIOUS_SHELL_BINARY) {
@@ -2049,15 +2346,11 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     });
   }
 
-  await t.test("Chrome reports the tighter Datastar policy during the trial", async () => {
-    const messages = [...new Set(page.policyMessages.filter((message) => /Content Security Policy/u.test(message)))];
-    if (mode === "report-only") {
-      assert.ok(messages.length > 0, "Expected Chrome to report Datastar's Function compilation");
-      assert.ok(messages.every((message) => /evaluation|evaluate|eval/u.test(message)), messages.join("\n"));
-      assert.ok(messages.every((message) => /report.only/u.test(message)), messages.join("\n"));
-    } else {
-      assert.deepEqual(messages, []);
-    }
-    t.diagnostic(JSON.stringify({ mode, policyMessages: messages.map((line) => line.replace(/'nonce-[^']+'/gu, "'nonce-REDACTED'")) }));
-  });
+  if (process.env.LSGET_PLAN_BASELINE_BINARY) {
+    await t.test("Mobile first listing transfers less than the whole-plan baseline", async t => {
+      const previous = await startServer(cleanups, resolve(process.env.LSGET_PLAN_BASELINE_BINARY), site, workA, mode);
+      const current = await startServer(cleanups, binary, site, workA, mode);
+      await compareFirstListing(t, { page, previous, current, mode, capture, until });
+    });
+  }
 });

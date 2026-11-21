@@ -38,9 +38,9 @@ function documentLink(value, cwd) {
 
 // Parse Markdown's HTML in an inert template, then create fresh nodes.
 // Source nodes and attributes never move into the live document.
-function renderMarkdown(parent, content, cwd) {
+function renderMarkdown(parent, html, cwd) {
   const source = document.createElement("template");
-  source.innerHTML = marked.parse(content);
+  source.innerHTML = html;
   const anchors = new Map();
   const fragmentLinks = [];
 
@@ -160,9 +160,34 @@ function renderRST(parent, content, cwd) {
   }
 }
 
-function readme(panel, response) {
+let markdownParser;
+
+function loadMarkdownParser() {
+  if (!markdownParser) {
+    const script = document.createElement("script");
+    script.nonce = document.getElementById("terminal-script")?.nonce ?? "";
+    script.src = new URL("./marked.min.js", import.meta.url).href;
+    markdownParser = new Promise((resolve, reject) => {
+      script.addEventListener("load", () => {
+        if (typeof globalThis.marked?.parse === "function") resolve(globalThis.marked);
+        else reject(new Error("Markdown parser unavailable"));
+      }, { once: true });
+      script.addEventListener("error", () => reject(new Error("Markdown parser unavailable")), { once: true });
+    }).catch(error => {
+      script.remove();
+      markdownParser = undefined;
+      throw error;
+    });
+    document.head.append(script);
+  }
+  return markdownParser;
+}
+
+async function readme(panel, response, signal) {
   const { readme, docType, cwd = "/", readmeTruncated } = response;
-  if (typeof readme !== "string") return;
+  if (typeof readme !== "string") throw new Error("Invalid README response");
+  const parser = readme && docType === "markdown" ? await loadMarkdownParser() : null;
+  if (signal.aborted) return;
   const fragment = document.createDocumentFragment();
   if (readmeTruncated) {
     const notice = document.createElement("p");
@@ -171,8 +196,8 @@ function readme(panel, response) {
     fragment.append(notice);
   }
   if (readme) {
-    if (docType === "markdown") {
-      renderMarkdown(fragment, readme, cwd);
+    if (parser) {
+      renderMarkdown(fragment, parser.parse(readme), cwd);
     } else if (docType === "rst") {
       renderRST(fragment, readme, cwd);
     } else {
