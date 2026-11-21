@@ -261,6 +261,63 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     await writeFile(join(process.env.LSGET_SCREENSHOTS, label + ".png"), Buffer.from(data, "base64"));
   }
 
+  function readingColors(selectors, outlineBackdrop = null) {
+    return page.evaluate((selectors, outlineBackdrop) => {
+      const rgba = color => {
+        const [red, green, blue, alpha = 1] = color.match(/[\d.]+/gu).map(Number);
+        return [red, green, blue, alpha];
+      };
+      const over = ([r, g, b, alpha], under) => {
+        const opacity = alpha + under[3] * (1 - alpha);
+        const rgb = [r, g, b].map((value, i) =>
+          opacity ? (value * alpha + under[i] * under[3] * (1 - alpha)) / opacity : 0);
+        return [...rgb, opacity];
+      };
+      const luminance = color => color.slice(0, 3).map(channel => {
+        const v = channel / 255;
+        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      }).reduce((total, channel, i) => total + channel * [0.2126, 0.7152, 0.0722][i], 0);
+      const contrast = (first, second) => {
+        const values = [luminance(first), luminance(second)].sort((a, b) => b - a);
+        return (values[0] + 0.05) / (values[1] + 0.05);
+      };
+
+      return selectors.flatMap(selector =>
+        Array.from(document.querySelectorAll(selector), element => {
+          const style = getComputedStyle(element);
+          const layers = [];
+          for (let parent = element; parent; parent = parent.parentElement) layers.push(getComputedStyle(parent));
+          // Compare a painted glyph with the same point without the glyph. Each
+          // ancestor's opacity applies to the group before its parent is painted.
+          const paint = color => {
+            let pixel = rgba(color);
+            for (const layer of layers) {
+              pixel = over(pixel, rgba(layer.backgroundColor));
+              pixel[3] *= Number(layer.opacity);
+            }
+            return over(pixel, [255, 255, 255, 1]);
+          };
+          const foreground = paint(style.color);
+          const background = paint("rgba(0, 0, 0, 0)");
+          const ringBackground = outlineBackdrop
+            ? rgba(getComputedStyle(document.querySelector(outlineBackdrop)).backgroundColor)
+            : background;
+          const { x, y, width, height } = element.getBoundingClientRect();
+          return {
+            selector, text: element.textContent.trim(), color: style.color, foreground, background,
+            layers: layers.map(layer => [layer.backgroundColor, Number(layer.opacity)]),
+            ratio: contrast(foreground, background),
+            size: parseFloat(style.fontSize), weight: Number(style.fontWeight),
+            decoration: style.textDecorationLine, thickness: style.textDecorationThickness,
+            outline: style.outlineStyle, outlineWidth: parseFloat(style.outlineWidth),
+            outlineRatio: contrast(paint(style.outlineColor), ringBackground),
+            visible: element.checkVisibility({ visibilityProperty: true, opacityProperty: true }),
+            rect: { x, y, width, height },
+          };
+        }));
+    }, selectors, outlineBackdrop);
+  }
+
   function holdNavigationResponses() {
     return page.send("Page.addScriptToEvaluateOnNewDocument", {
       source: "(" + function () {
@@ -451,6 +508,139 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     assert.equal(preview.alt, "sample.svg");
     assert.match(preview.caption, /^📷 sample\.svg \(/u);
     t.diagnostic(JSON.stringify(preview));
+  });
+
+  await t.test("Files, README and terminal help text keep readable contrast", async () => {
+    const directory = join(site, "legibility");
+    await mkdir(directory);
+    await writeFile(join(directory, "note.txt"), "A shared note.\n");
+    await writeFile(join(directory, "README.md"), [
+      "# Shared notes", "", "[Read the note](note.txt)", "",
+      "## Getting started", "### Notes", "#### More details", "##### Examples", "###### References", "",
+      "> An important note.", "", "Use `cat`, **bold** and *emphasis*.", "",
+      "| [*Documentation*](note.txt) |", "| --- |", "| Contents |", "", "- [x] Read the note",
+    ].join("\n"));
+    const captures = [];
+    const failures = [];
+    const link = "#readme p > a";
+    const help = ["version", "note", "heading", "description"].map(role => ".help-" + role);
+
+    async function measure(label, selectors, state = "rest") {
+      const colors = await readingColors(selectors);
+      for (const selector of selectors) {
+        assert.ok(colors.some(color => color.selector === selector), label + " missing " + selector);
+      }
+      for (const color of colors) {
+        const { selector, text, visible, size, weight, ratio } = color;
+        assert.ok(visible, label + " hidden " + selector);
+        const threshold = size >= 24 || (size >= 18.66 && weight >= 700) ? 3 : 4.5;
+        if (ratio < threshold) failures.push([label, state, selector, text, ratio, threshold]);
+        if (state === "focus-visible" &&
+            (color.outline !== "solid" || color.outlineWidth < 2 || color.outlineRatio < 3)) {
+          failures.push([label, state, "focus outline", color.outline, color.outlineWidth, color.outlineRatio]);
+        }
+      }
+      const geometry = await page.evaluate(() => ({
+        width: innerWidth, height: innerHeight, content: document.documentElement.scrollWidth,
+        rootFontSize: getComputedStyle(document.documentElement).fontSize,
+      }));
+      captures.push({ label, state, geometry, colors });
+      return colors[0];
+    }
+
+    await page.send("Page.enable");
+    await page.send("DOM.enable");
+    await page.send("CSS.enable");
+    await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    try {
+      for (const [width, height] of [[390, 844], [1280, 800]]) {
+        const mobile = width === 390;
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
+        await page.send("Emulation.setTouchEmulationEnabled", { enabled: mobile });
+        for (const size of [16, 32]) {
+          await page.send("Page.setFontSizes", { fontSizes: { standard: size, fixed: size } });
+          const format = width + "x" + height + "-" + (size / 16 * 100);
+          const files = "reading-files-" + format;
+          const terminal = "reading-help-" + format;
+          const reader = "reading-readme-" + format;
+
+          await page.open(origin + "/legibility?view=files&size=" + size);
+          await page.wait('document.querySelector(".file-row") && location.search.endsWith(' + JSON.stringify("size=" + size) + ')');
+          await page.evaluate('document.querySelector(".file-actions").open = true');
+          await measure(files, [".up", ".view-link", "h1", ".file-row", ".file-meta", ".file-actions[open] a", ".file-actions summary"]);
+          await capture(files);
+          await key("Tab", 9);
+          await measure(files, [".up:focus-visible"], "focus-visible");
+
+          await page.open(origin + "/legibility?view=terminal&size=" + size);
+          await page.wait('document.querySelector("#readme h1")?.textContent === "Shared notes" && document.querySelector("#transcript .clickable-file")');
+          await page.evaluate(async () => {
+            await new Promise(requestAnimationFrame);
+            document.getElementById("transcript").scrollTop = 0;
+          });
+          await measure(terminal, [...help.map(selector => "#transcript " + selector), "#run-command", "#complete-command"]);
+          await capture(terminal);
+          await command("help");
+          await page.wait('document.querySelectorAll("#transcript .help-version").length === 2');
+          await measure(terminal, help.map(selector => "#transcript .out " + selector), "command-output");
+          if (mobile) {
+            await tap("#readme-toggle");
+            await page.wait('!document.getElementById("readme").inert');
+          }
+          await measure(reader, [
+            "#readme a", "#readme h1", "#readme h2", "#readme h3", "#readme h4", "#readme h5", "#readme h6",
+            "#readme blockquote", "#readme code", "#readme strong", "#readme em", "#readme th",
+          ]);
+          await capture(reader);
+          const checkbox = await page.evaluate(() => {
+            const task = document.querySelector("#readme input[type=checkbox]");
+            return { disabled: task.matches(":disabled"), checked: task.checked, paint: getComputedStyle(task).appearance };
+          });
+          assert.deepEqual(checkbox, { disabled: true, checked: true, paint: "auto" });
+          captures.push({ label: reader, task: checkbox });
+
+          const resting = await measure(reader, [link]);
+          const { root } = await page.send("DOM.getDocument");
+          const { nodeId } = await page.send("DOM.querySelector", { nodeId: root.nodeId, selector: link });
+          try {
+            for (const state of ["hover", "active"]) {
+              await page.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [state] });
+              const measured = await measure(reader, [link], state);
+              if (state === "active" && measured.color === resting.color && measured.thickness === resting.thickness) {
+                failures.push([reader, state, "link state matches rest"]);
+              }
+            }
+          } finally {
+            await page.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [] });
+          }
+          await page.evaluate('document.getElementById("readme").focus({ preventScroll: true })');
+          await key("Tab", 9);
+          await measure(reader, [link + ":focus-visible"], "focus-visible");
+          await capture(reader + "-focus");
+          if (!resting.decoration.includes("underline")) failures.push([reader, "rest", "link must be underlined"]);
+          if (mobile) {
+            await key("Escape", 27);
+            await page.wait('!history.state?.readme && document.getElementById("readme").inert');
+          }
+          for (const { label, geometry } of captures.filter(entry => entry.label.endsWith(format) && entry.geometry)) {
+            assert.equal(geometry.width, width, label);
+            assert.equal(geometry.height, height, label);
+            assert.equal(geometry.rootFontSize, size + "px", label);
+          }
+        }
+      }
+      if (process.env.LSGET_SCREENSHOTS) {
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "reading-contrast.json"), JSON.stringify({ captures, failures }, null, 2));
+      }
+      assert.deepEqual(failures.slice(0, 3), [], failures.length + " reading contrast or state failures");
+    } finally {
+      await page.send("CSS.disable");
+      await page.send("DOM.disable");
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 16 } });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+    }
   });
 
   await t.test("Typing, command recall, and browser history work under the shell policy", async () => {
@@ -1442,6 +1632,246 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       await page.send("Emulation.setScriptExecutionDisabled", { value: false });
       await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 16 } });
       await page.send("Emulation.clearDeviceMetricsOverride");
+    }
+  });
+
+  await t.test("Keyboard and accessibility navigation at 200 percent text", async () => {
+    const folder = "/keyboard";
+    const chapter = folder + "/chapter";
+    const name = "Résumé & field-report with a long name.bin";
+    const file = Buffer.from([0, 3, 128, 255, 10]);
+    const headings = ["Keyboard guide", "Read a note", "More details"];
+    await mkdir(join(site, chapter), { recursive: true });
+    await writeFile(join(site, folder, name), file);
+    await writeFile(join(site, chapter, "README.md"), [
+      "# " + headings[0], "", "## " + headings[1], "", "[Parent folder](../)", "", "### " + headings[2],
+    ].join("\n"));
+
+    const evidence = [];
+    const failures = [];
+    async function snapshot(label, stage) {
+      const { nodes } = await page.send("Accessibility.getFullAXTree");
+      const index = new Map(nodes.map(node => [node.nodeId, node]));
+      const ordered = [];
+      function visit(node) {
+        if (!node) return;
+        if (!node.ignored) {
+          const states = Object.fromEntries((node.properties || []).filter(property =>
+            ["current", "expanded", "focused", "level", "readonly"].includes(property.name))
+            .map(property => [property.name, property.value.value]));
+          ordered.push({ role: node.role?.value, name: node.name?.value, states });
+        }
+        for (const id of node.childIds || []) visit(index.get(id));
+      }
+      visit(nodes[0]);
+      evidence.push({ label, stage, accessibility: ordered });
+      return ordered;
+    }
+
+    function expectOrder(tree, targets) {
+      let position = -1;
+      return targets.map(([role, name]) => {
+        const next = tree.findIndex((node, index) => index > position && node.role === role && node.name === name);
+        assert.ok(next > position, role + " " + name + " is missing or out of reading order: " +
+          JSON.stringify(tree.filter(node => targets.some(([, name]) => node.name === name))));
+        position = next;
+        return tree[position];
+      });
+    }
+
+    async function focus(label, selector, reverse = false) {
+      await key("Tab", 9, reverse ? 8 : 0);
+      const measured = await page.evaluate(selector => {
+        const node = document.activeElement;
+        const style = getComputedStyle(node);
+        const { top, bottom, left, right } = node.getBoundingClientRect();
+        const coveringHeader = document.querySelector(".files") && !node.closest("header")
+          ? document.querySelector("header").getBoundingClientRect().bottom : 0;
+        const center = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        return {
+          expected: node.matches(selector), tag: node.tagName, id: node.id, text: node.textContent.trim().slice(0, 100),
+          visible: node.contains(center), clip: { top, bottom, left, right, coveringHeader },
+          viewport: { width: innerWidth, height: innerHeight, content: document.documentElement.scrollWidth },
+          rootFontSize: getComputedStyle(document.documentElement).fontSize,
+          textRects: range.getClientRects().length,
+          focusVisible: [...document.querySelectorAll(":focus-visible")].map(element => element === node),
+          outline: { style: style.outlineStyle, width: parseFloat(style.outlineWidth), color: style.outlineColor, offset: parseFloat(style.outlineOffset) },
+          boxShadow: style.boxShadow,
+        };
+      }, selector);
+      evidence.push({ label, selector, direction: reverse ? "reverse" : "forward", focus: measured });
+      const { visible, clip, viewport, rootFontSize, focusVisible, outline } = measured;
+      assert.ok(measured.expected, label + " Tab expected " + selector + ": " + JSON.stringify(measured));
+      assert.deepEqual(focusVisible, [true], label + " " + selector);
+      assert.equal(rootFontSize, "32px", label);
+      assert.equal(outline.style, "solid", label + " " + selector);
+      assert.ok(outline.width >= 2, label + " " + selector);
+      assert.ok(viewport.content <= viewport.width, label + " " + JSON.stringify(viewport));
+      if (!visible || clip.top < clip.coveringHeader - 1 || clip.bottom > viewport.height + 1 ||
+          clip.left < -1 || clip.right > viewport.width + 1) {
+        failures.push({ label, selector, reason: "occluded or clipped keyboard focus", measured });
+      }
+      return measured;
+    }
+
+    async function view(label, selected) {
+      const state = await page.evaluate(() => Array.from(document.querySelectorAll(".view-link, .view-switch a"), anchor =>
+        [anchor.textContent, anchor.getAttribute("aria-current")]));
+      assert.deepEqual(state, [["Files", selected === "files" ? "page" : null], ["Terminal", selected === "terminal" ? "page" : null]]);
+      evidence.push({ label, selectedView: selected, currentLinks: state });
+    }
+
+    async function readerToggleFocus(label, backdrop) {
+      await focus(label, "#readme-toggle");
+      const [ring] = await readingColors(["#readme-toggle"], backdrop);
+      evidence.push({ label, backdrop, toggleFocusContrast: ring.outlineRatio });
+      if (ring.outlineRatio < 3) failures.push({ label, selector: "#readme-toggle", reason: "focus contrast", ratio: ring.outlineRatio });
+    }
+
+    async function back() {
+      const { currentIndex, entries } = await page.send("Page.getNavigationHistory");
+      assert.ok(currentIndex > 0);
+      await page.send("Page.navigateToHistoryEntry", { entryId: entries[currentIndex - 1].id });
+    }
+
+    const folderPath = "[href^=" + JSON.stringify(chapter + "?") + "]";
+    const fileLink = ".file-row:not(" + folderPath + ")";
+    const folderLink = ".file-row" + folderPath;
+    await page.send("Page.enable");
+    await page.send("Accessibility.enable");
+    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    try {
+      for (const [width, height] of [[320, 640], [390, 844], [844, 390]]) {
+        const label = width + "x" + height + "-200";
+        const downloads = join(scratch, "keyboard-download-" + width);
+        await mkdir(downloads);
+        await page.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
+        await page.send("Page.setFontSizes", { fontSizes: { standard: 32, fixed: 32 } });
+        await page.open(origin + folder + "?view=files&keyboard=" + width);
+        await page.wait('document.querySelector("h1")?.textContent === "Index of /keyboard" && location.search.endsWith(' + JSON.stringify(String(width)) + ')');
+        assert.equal(await page.evaluate("document.scripts.length"), 0);
+        await view(label, "files");
+        const closed = await snapshot(label, "files-closed");
+        const [, , , heading, , , action] = expectOrder(closed, [
+          ["link", "Up to parent folder"], ["link", "Files"], ["link", "Terminal"], ["heading", "Index of /keyboard"],
+          ["link", "chapter/"], ["link", name], ["DisclosureTriangle", "Actions for " + name],
+        ]);
+        assert.equal(heading.states.level, 1);
+        assert.equal(action.states.expanded, false);
+        assert.ok(!closed.some(node => node.name === "Download " + name || node.name === "Share URL for " + name));
+        for (const selector of [".up", "#files-view", "#terminal-view", ".breadcrumbs a", folderLink]) {
+          await focus(label, selector);
+        }
+        const filename = await focus(label, fileLink);
+        if (width < 400) assert.ok(filename.textRects > 1, label + " filename should wrap");
+        await focus(label, "summary");
+        await key("Enter", 13);
+        assert.equal(await page.evaluate('document.querySelector("details").open'), true);
+        const opened = await snapshot(label, "files-expanded");
+        const [expanded, , share] = expectOrder(opened, [
+          ["DisclosureTriangle", "Actions for " + name], ["link", "Download " + name], ["textbox", "Share URL for " + name],
+        ]);
+        assert.equal(expanded.states.expanded, true);
+        assert.equal(share.states.readonly, true);
+        await focus(label, ".download");
+        await capture("keyboard-download-" + label);
+        await focus(label, ".share-url");
+        await capture("keyboard-share-" + label);
+        await focus(label, ".download", true);
+        if (height < 450) await capture("keyboard-reverse-download-" + label);
+        await key("Enter", 13);
+        const bytes = await until(async () => {
+          const names = await readdir(downloads);
+          if (names.length !== 1 || names[0].endsWith(".crdownload")) return;
+          return readFile(join(downloads, names[0]));
+        }, label + " keyboard download");
+        assert.deepEqual(bytes, file);
+        evidence.push({ label, downloaded: bytes.toString("hex") });
+        await focus(label, "summary", true);
+        if (height < 450) await capture("keyboard-reverse-summary-" + label);
+        for (const selector of [fileLink, folderLink]) await focus(label, selector, true);
+        await key("Enter", 13);
+        await page.wait('document.querySelector("h1")?.textContent === "Index of /keyboard/chapter"');
+        assert.equal(await page.evaluate('new URL(location.href).searchParams.get("view")'), "files");
+        for (const selector of [".up", "#files-view", "#terminal-view"]) await focus(label, selector);
+        await key("Enter", 13);
+        await page.wait('document.querySelector("#readme h1")?.textContent === "Keyboard guide"');
+        await view(label, "terminal");
+        const terminal = await snapshot(label, "terminal");
+        const terminalOrder = expectOrder(terminal, [
+          ["link", "Files"], ["link", "Terminal"], ["combobox", "Terminal command"], ["button", "Run"], ["button", "Show README"],
+        ]);
+        assert.equal(terminalOrder.at(-1).states.expanded, false);
+        assert.ok(!terminal.some(node => node.role === "heading" && node.name === headings[0]));
+        for (const selector of ["#files-view", "#terminal-view", "#transcript", "#command"]) {
+          await focus(label, selector);
+        }
+        await page.send("Input.insertText", { text: "pwd" });
+        await focus(label, "#complete-command");
+        await focus(label, "#run-command");
+        await capture("keyboard-run-" + label);
+        await key("Enter", 13);
+        await page.wait('document.getElementById("terminal-status").textContent.trim() === "/keyboard/chapter"');
+        evidence.push({ label, run: "pwd", workingDirectory: chapter });
+        await readerToggleFocus(label, "body");
+        await key("Enter", 13);
+        const openedReader = 'history.state?.readme === true && document.activeElement.id === "readme"';
+        await page.wait(openedReader);
+        const readerGeometry = await page.evaluate(() => {
+          const panel = document.getElementById("readme");
+          const text = document.createRange();
+          text.selectNodeContents(panel.querySelector("h1"));
+          return {
+            content: panel.scrollWidth, width: panel.clientWidth,
+            headingLines: text.getClientRects().length,
+          };
+        });
+        evidence.push({ label, readerGeometry });
+        if (readerGeometry.content > readerGeometry.width) {
+          failures.push({ label, selector: "#readme", reason: "reader content overflows horizontally", measured: { clip: readerGeometry } });
+        }
+        await capture("keyboard-reader-heading-" + label);
+        const reader = await snapshot(label, "reader-expanded");
+        const [h1, h2, , h3, toggle] = expectOrder(reader, [
+          ["heading", headings[0]], ["heading", headings[1]], ["link", "Parent folder"], ["heading", headings[2]], ["button", "Close README"],
+        ]);
+        assert.deepEqual([h1.states.level, h2.states.level, h3.states.level], [1, 2, 3]);
+        assert.equal(toggle.states.expanded, true);
+        assert.ok(!reader.some(node => node.role === "button" && node.name === "Run"));
+        await focus(label, "#readme a");
+        await capture("keyboard-reader-" + label);
+        await readerToggleFocus(label, "#readme");
+        await capture("keyboard-reader-close-" + label);
+        const dismissed = '!history.state?.readme && document.activeElement.id === "readme-toggle" && document.getElementById("readme").inert';
+        await key("Escape", 27);
+        await page.wait(dismissed);
+        await key("Enter", 13);
+        await page.wait(openedReader);
+        await back();
+        await page.wait(dismissed);
+        await back();
+        await page.wait('document.querySelector("h1")?.textContent === "Index of /keyboard/chapter"');
+        assert.equal(await page.evaluate("location.pathname"), chapter);
+        assert.equal(await page.evaluate('new URL(location.href).searchParams.get("view")'), "files");
+        evidence.push({ label, escapeAndBackRestoreTrigger: true, secondBackReturnsFiles: true });
+      }
+      assert.deepEqual(failures.map(({ label, selector, reason, measured, ratio }) =>
+        [label, selector, reason, measured?.clip ?? ratio]), []);
+    } finally {
+      if (process.env.LSGET_SCREENSHOTS) {
+        await writeFile(join(process.env.LSGET_SCREENSHOTS, "keyboard-navigation.json"), JSON.stringify({ evidence, failures }, null, 2));
+      }
+      await page.send("Browser.setDownloadBehavior", { behavior: "default" });
+      await page.send("Accessibility.disable");
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 16 } });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+      await page.send("Page.disable");
     }
   });
 
