@@ -191,7 +191,7 @@ An archive that exceeds the entry, depth or path budget is rejected before strea
 
 The binary serves its embedded terminal shell for browsable directories. To edit the shell locally, run `./lsget -dir ./files -dev-template ./index.html` or use `LSGET_DIR=./files task dev` from this repository. Relative template paths resolve from the process working directory. lsget reads the selected file for each shell request. Give template access only to trusted developers since the override runs as application code and serves without the embedded shell’s Content Security Policy (CSP).
 
-Terminal controls live in `assets/js/terminal.js` and rendering helpers in `assets/js/terminal-view.js`. Rebuild with Go when editing either module. The embedded shell uses `Cache-Control: no-store` and loads its scripts from `/assets/lsget-shell/<version>/`, where the version is a SHA-256 digest of the shell and its scripts. Those script responses can be cached for a year. After an upgrade, reloading the page gets the new shell and script paths. A missing script from an older version returns HTTP 404 until the page is reloaded.
+Terminal controls live in `assets/js/terminal.js` and rendering helpers in `assets/js/terminal-view.js`. Rebuild with Go when editing either module. The embedded shell uses `Cache-Control: no-store` and loads its scripts and bundled favicon from `/assets/lsget-shell/<version>/`. The version is a SHA-256 digest of the shell and its assets. These assets can be cached for a year. After an upgrade, reloading the page gets the new shell and asset paths. A missing asset from an older version returns HTTP 404 until the page is reloaded.
 
 The browser dependency revisions, download sources, and license notices are documented in [assets/js/README.md](assets/js/README.md). Run `task vendor-check` to verify the checked-in files offline. Local setup with mise and the native CI and binary release jobs use Go 1.24.5. When changing the toolchain, update `go.mod` and `mise.toml` together.
 
@@ -201,7 +201,7 @@ The embedded terminal enforces a CSP. Each response supplies a nonce for its scr
 
 ### Configuration flags
 
-Run `./lsget -h` for the flags in your binary. Flags take precedence over nonempty environment variables, which take precedence over the binary defaults. A standalone binary reads its process environment. [.env.example](.env.example) supplies values for Compose interpolation.
+Run `./lsget -h` for the flags in your binary. Flags take precedence over nonempty environment variables, which take precedence over the binary defaults. A standalone binary reads its process environment.
 
 | Environment variable | Flag | Standalone default | Purpose |
 | --- | --- | --- | --- |
@@ -212,7 +212,10 @@ Run `./lsget -h` for the flags in your binary. Flags take precedence over nonemp
 | `LSGET_PID` | `-pid` | Empty | Optional application PID file |
 | `LSGET_LOGFILE` | `-logfile` | Empty | Optional access log file. Request logs also go to stdout |
 | `LSGET_SECURE_SESSION_COOKIE` | `-secure-session-cookie` | `false` | Require HTTPS for session cookies behind an HTTPS-only proxy |
-| `LSGET_BASEURL` | `-baseurl` | Empty | Public URL for share links, origin checks and generated sitemaps |
+| `LSGET_BASEURL` | `-baseurl` | Empty | Public URL for canonical tags, share links, origin checks and generated sitemaps |
+| `LSGET_SITE_TITLE` | `-site-title` | `📂 lsget` | Browser and Open Graph title for the embedded terminal |
+| `LSGET_SITE_DESCRIPTION` | `-site-description` | `Browse and download files with lsget.` | Description for the embedded terminal |
+| `LSGET_PREVIEW_IMAGE` | `-preview-image` | Empty | Absolute HTTP(S) URL of the Open Graph preview image |
 | `LSGET_SHELL_CSP` | `-shell-csp` | `enforce` | Embedded shell CSP mode |
 | `LSGET_SITEMAP` | `-sitemap` | `0` | Sitemap refresh interval in minutes, with `0` for on-demand generation |
 | `LSGET_TRUSTED_PROXIES` | `-trusted-proxies` | Empty | Comma-separated proxy CIDRs allowed to supply forwarding headers |
@@ -222,6 +225,20 @@ The native recipes listen on `127.0.0.1:8037` and serve `/srv/ftp`. Both work fr
 Serve content with read and directory traversal permissions for the process user. Keep the content read-only for that user. An optional access log must be a writable regular file. lsget creates missing log directories when their parent permits it. An optional PID file needs an existing writable parent. Place both outside the served tree. lsget creates the PID file exclusively and removes it after a clean shutdown. If a crash leaves a PID file behind, establish that the old process has exited before removing it and restarting.
 
 `LSGET_CATMAX` and `LSGET_SITEMAP` accept nonnegative whole numbers. Startup errors identify invalid settings and inaccessible paths on stderr. For a bind failure, check that `LSGET_ADDR` names an available local address and port. Stop an earlier lsget instance or choose another port. For service-specific logs, permissions, and restart commands, see [service troubleshooting](deploy/QUICKSTART.md#troubleshooting). SIGINT and SIGTERM stop background refreshes and new connections, then give active HTTP requests up to five seconds to finish.
+
+#### Link previews
+
+The embedded terminal includes a title, description, and local favicon in its initial HTML. Set `LSGET_BASEURL` to add a canonical URL and an `og:url` for each terminal directory. Use the public URL up to the served root, including any reverse proxy path prefix. Set `LSGET_PREVIEW_IMAGE` to a public HTTP(S) image URL without credentials to add `og:image`. Preview readers fetch the image directly from that URL.
+
+```sh
+LSGET_BASEURL='https://files.example.com/releases' \
+LSGET_SITE_TITLE='Release files' \
+LSGET_SITE_DESCRIPTION='Browse releases and download checksums.' \
+LSGET_PREVIEW_IMAGE='https://files.example.com/releases/preview.png' \
+./lsget -dir ./files
+```
+
+Published `index.html` pages and development templates control their own metadata.
 
 #### Sitemap
 

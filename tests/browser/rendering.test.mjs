@@ -21,8 +21,8 @@ async function until(probe, description) {
   assert.fail("Timed out waiting for " + description);
 }
 
-function start(cleanups, command, args, cwd) {
-  const child = spawn(command, args, { cwd, stdio: ["ignore", "ignore", "pipe"] });
+function start(cleanups, command, args, cwd, env = process.env) {
+  const child = spawn(command, args, { cwd, env, stdio: ["ignore", "ignore", "pipe"] });
   const stopped = new Promise((resolve) => child.once("close", resolve));
   let startError;
   child.once("error", (error) => { startError = error; });
@@ -153,13 +153,13 @@ async function testAddress() {
   return address;
 }
 
-async function startServer(cleanups, binary, site, cwd, mode, template = "") {
+async function startServer(cleanups, binary, site, cwd, mode, template = "", args = []) {
   const address = await testAddress();
   const origin = "http://" + address;
   const running = start(cleanups, binary, [
     "-dir", site, "-addr", address, "-pid=", "-logfile=", "-baseurl=", "-sitemap=0",
-    "-shell-csp", mode, "-dev-template", template,
-  ], cwd);
+    "-shell-csp", mode, "-dev-template", template, ...args,
+  ], cwd, { ...process.env, LSGET_SITE_TITLE: "", LSGET_SITE_DESCRIPTION: "", LSGET_PREVIEW_IMAGE: "" });
   await until(() => {
     running();
     return fetch(origin, { signal: AbortSignal.timeout(500) }).then((r) => r.ok, () => false);
@@ -847,10 +847,72 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     t.diagnostic("The first binary served the embedded shell from an empty working directory. The default and explicit override in the second working directory preserved publishing and no-JS handling.");
   });
 
+  await t.test("Initial metadata and bundled favicon match the browser", async () => {
+    let previewRequests = 0;
+    const preview = createHTTPServer((_, response) => {
+      previewRequests++;
+      response.writeHead(500).end();
+    });
+    preview.listen(0, "127.0.0.1");
+    await once(preview, "listening");
+    cleanups.push(() => new Promise((resolve) => {
+      preview.close(resolve);
+      preview.closeAllConnections();
+    }));
+    const previewURL = `http://127.0.0.1:${preview.address().port}/cover.png?v=2&w=640`;
+    const publicBase = "https://public.example/releases%20here";
+    const title = 'Café & <em> "Releases"';
+    const description = 'Browse crédit & "checksums".';
+    const custom = await startServer(cleanups, binary, site, workA, mode, "", [
+      "-baseurl", publicBase, "-site-title", title, "-site-description", description, "-preview-image", previewURL,
+    ]);
+    const path = "/docs?from=preview";
+    const crawler = await fetch(custom + path, { headers: { "User-Agent": "lsget-metadata-fixture-crawler" } });
+    assert.equal(crawler.status, 200);
+    const initial = await crawler.text();
+    assert.match(initial, /<title>Café &amp; &lt;em&gt; &#34;Releases&#34;<\/title>/u);
+    assert.ok(initial.includes(`<link rel="canonical" href="${publicBase}/docs" />`));
+    assert.ok(initial.includes(`<meta property="og:image" content="${previewURL.replace("&", "&amp;")}" />`));
+
+    await page.open(custom + path);
+    await page.wait(`document.title === ${JSON.stringify(title)}`);
+    const data = await page.evaluate(() => ({
+      title: document.title,
+      ogTitle: document.querySelector('meta[property="og:title"]').content,
+      ogDescription: document.querySelector('meta[property="og:description"]').content,
+      description: document.querySelector('meta[name="description"]').content,
+      canonical: document.querySelector('link[rel="canonical"]').href,
+      ogURL: document.querySelector('meta[property="og:url"]').content,
+      ogImage: document.querySelector('meta[property="og:image"]').content,
+      favicon: document.querySelector('link[rel="icon"]').getAttribute("href"),
+    }));
+    assert.match(data.favicon, /^\/assets\/lsget-shell\/[a-f0-9]{64}\/favicon\.png$/u);
+    assert.deepEqual(data, { title, ogTitle: title, ogDescription: description, description,
+      canonical: publicBase + "/docs", ogURL: publicBase + "/docs", ogImage: previewURL, favicon: data.favicon });
+    const icon = await fetch(custom + data.favicon);
+    assert.equal(icon.status, 200);
+    assert.equal(icon.headers.get("Content-Type"), "image/png");
+    assert.deepEqual(Buffer.from(await icon.arrayBuffer()), await readFile(new URL("../../assets/favicon.png", import.meta.url)));
+    assert.equal(previewRequests, 0, "The metadata response must not fetch the preview image");
+    assert.deepEqual(await readdir(workA), []);
+  });
+
   if (process.env.LSGET_PREVIOUS_SHELL_BINARY) {
     await t.test("A cached shell and modules cannot mix between binary releases", async t => {
       const previous = await startServer(cleanups, resolve(process.env.LSGET_PREVIOUS_SHELL_BINARY), site, workA, mode);
       await verifyShellUpgrade(t, cleanups, page, previous, origin);
+      for (const path of ["/docs/guide/", "/docs/guide/?nojs=1", "/docs?nojs=1",
+        "/" + encodeURIComponent(file), "/?file=" + encodeURIComponent(file),
+        "/assets/js/marked.min.js", "/assets/js/datastar.js"]) {
+        const [before, after] = await Promise.all([fetch(previous + path), fetch(origin + path)]);
+        assert.equal(before.status, 200, path);
+        assert.equal(after.status, before.status, path);
+        for (const header of ["Content-Type", "Content-Disposition", "Content-Length", "Cache-Control", "Content-Security-Policy"]) {
+          assert.equal(after.headers.get(header), before.headers.get(header), `${path} ${header}`);
+        }
+        assert.deepEqual(await after.arrayBuffer(), await before.arrayBuffer(), path);
+      }
+      t.diagnostic("Seven published, plain-listing, download, and stable vendor responses matched the previous binary byte for byte.");
     });
   }
 

@@ -339,6 +339,7 @@ type server struct {
 
 	devTemplate        string
 	shellCSPReportOnly bool
+	siteMetadata       siteMetadata
 
 	sitemapMu sync.Mutex
 	sitemap   atomic.Pointer[sitemapSnapshot]
@@ -1129,6 +1130,7 @@ func walkVisibleDir(ctx context.Context, budget *workBudget, root *os.Root, dir 
 func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string) {
 	htmlContent := embeddedIndex
 	var nonce string
+	var metadata []byte
 	if s.devTemplate != "" {
 		var err error
 		htmlContent, err = os.ReadFile(s.devTemplate)
@@ -1137,12 +1139,21 @@ func (s *server) serveMainIndex(w http.ResponseWriter, initialPath string) {
 			return
 		}
 	} else {
+		var err error
+		metadata, err = s.renderSiteMetadata(initialPath)
+		if err != nil {
+			http.Error(w, "Could not render site metadata", http.StatusInternalServerError)
+			return
+		}
 		nonce = rand.Text()
 		w.Header().Set("Cache-Control", "no-store")
 		s.setShellCSP(w, nonce)
 	}
 
 	processedHTML := s.processHTMLTemplate(htmlContent, initialPath, nonce)
+	if metadata != nil {
+		processedHTML = bytes.Replace(processedHTML, []byte("<title>"+defaultSiteTitle+"</title>"), metadata, 1)
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

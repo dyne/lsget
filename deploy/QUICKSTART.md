@@ -87,6 +87,14 @@ proxy_set_header X-Forwarded-Proto $scheme;
 
 The trusted peer setting controls which forwarding headers lsget uses for the client IP and for share-link scheme detection when there is no public base URL. Browser origin checks use the request host and scheme or `LSGET_BASEURL`. `LSGET_SECURE_SESSION_COOKIE=true` selects HTTPS for origin checks on a host-preserving proxy and sets the cookie's `Secure` attribute. See [proxy metadata and access logs](../README.md#proxy-metadata-and-access-logs) for multiple proxy hops.
 
+To customize the embedded terminal's [link previews](../README.md#link-previews), add the optional settings below to the same service configuration.
+
+```sh
+LSGET_SITE_TITLE="Release files"
+LSGET_SITE_DESCRIPTION="Browse releases and download checksums."
+LSGET_PREVIEW_IMAGE="https://files.example.com/preview.png"
+```
+
 ## Troubleshooting
 
 Read the recent journal on systemd or the `.err` file on OpenRC using the commands above. Identify the failing setting or path before restarting.

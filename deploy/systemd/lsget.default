@@ -21,8 +21,13 @@ LSGET_CATMAX="4096"
 # LSGET_LOGFILE="/var/log/lsget/access.log"
 
 # Base URL for the site (e.g., https://files.example.com)
-# Used for sitemap generation, origin checks and url/share commands.
+# Used for canonical tags, sitemaps, origin checks and url/share commands.
 LSGET_BASEURL=""
+
+# Optional metadata for the embedded terminal.
+# LSGET_SITE_TITLE="Release files"
+# LSGET_SITE_DESCRIPTION="Browse releases and download checksums."
+# LSGET_PREVIEW_IMAGE="https://files.example.com/preview.png"
 
 # In-memory sitemap refresh interval in minutes (0 = on demand only).
 LSGET_SITEMAP="0"

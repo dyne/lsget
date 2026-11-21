@@ -23,8 +23,13 @@ LSGET_CATMAX="4096"
 # Use a unique path per instance if you set this.
 # LSGET_PID="/var/lib/lsget/lsget.pid"
 
-# Public URL for sitemap generation, origin checks and url/share commands.
+# Public URL for canonical tags, sitemaps, origin checks and url/share commands.
 # LSGET_BASEURL="https://files.example.com"
+
+# Optional metadata for the embedded terminal.
+# LSGET_SITE_TITLE="Release files"
+# LSGET_SITE_DESCRIPTION="Browse releases and download checksums."
+# LSGET_PREVIEW_IMAGE="https://files.example.com/preview.png"
 
 # In-memory sitemap refresh interval in minutes (0 = on demand only).
 # LSGET_SITEMAP="0"

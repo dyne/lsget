@@ -32,6 +32,7 @@ type config struct {
 	pidFile             string
 	logFile             string
 	baseURL             string
+	siteMetadata        siteMetadata
 	trustedProxies      []netip.Prefix
 	sitemapInterval     time.Duration
 }
@@ -52,6 +53,9 @@ func parseConfig(args []string, getenv func(string) string, usage io.Writer) (co
 	flags.StringVar(&cfg.pidFile, "pid", "", "path to PID file (env: LSGET_PID)")
 	flags.StringVar(&cfg.logFile, "logfile", "", "path to log file for statistics (env: LSGET_LOGFILE)")
 	flags.StringVar(&cfg.baseURL, "baseurl", "", "base URL for the site - full URL without trailing slash (e.g., https://files.example.com) (env: LSGET_BASEURL)")
+	flags.StringVar(&cfg.siteMetadata.Title, "site-title", "", "title of the embedded terminal (env: LSGET_SITE_TITLE)")
+	flags.StringVar(&cfg.siteMetadata.Description, "site-description", "", "description of the embedded terminal (env: LSGET_SITE_DESCRIPTION)")
+	flags.StringVar(&cfg.siteMetadata.PreviewImage, "preview-image", "", "absolute HTTP(S) URL for the terminal's social preview image (env: LSGET_PREVIEW_IMAGE)")
 	flags.StringVar(&proxyCIDRs, "trusted-proxies", "", "comma-separated CIDRs allowed to supply forwarded metadata (env: LSGET_TRUSTED_PROXIES)")
 	flags.Int64Var(&sitemapMinutes, "sitemap", 0, "refresh the in-memory sitemap every N minutes (0 = on demand only) (env: LSGET_SITEMAP)")
 	if err := flags.Parse(args); err != nil {
@@ -117,6 +121,13 @@ func parseConfig(args []string, getenv func(string) string, usage io.Writer) (co
 		if _, err := sitemapBaseURL(cfg.baseURL); err != nil {
 			return config{}, fmt.Errorf("%s: %w", source("baseurl"), err)
 		}
+	}
+	if cfg.siteMetadata.PreviewImage != "" {
+		imageURL, err := parsePreviewImageURL(cfg.siteMetadata.PreviewImage)
+		if err != nil {
+			return config{}, fmt.Errorf("%s: %w", source("preview-image"), err)
+		}
+		cfg.siteMetadata.PreviewImage = imageURL
 	}
 	if cfg.shellCSP != "enforce" && cfg.shellCSP != "report-only" {
 		return config{}, fmt.Errorf("%s must be enforce or report-only, got %q", source("shell-csp"), cfg.shellCSP)
@@ -203,6 +214,7 @@ func serveConfigured(ctx context.Context, cfg config, stdout, stderr io.Writer) 
 
 	s := newServer(root, cfg.catMax, cfg.logFile, cfg.baseURL)
 	s.devTemplate = cfg.devTemplate
+	s.siteMetadata = cfg.siteMetadata
 	s.shellCSPReportOnly = cfg.shellCSP == "report-only"
 	s.secureSessionCookie = cfg.secureSessionCookie
 	s.trustedProxies = cfg.trustedProxies
