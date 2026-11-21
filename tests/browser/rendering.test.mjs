@@ -197,7 +197,18 @@ async function fixture(root) {
   await writeFile(join(root, "below", "README.txt"), "x".repeat(256 * 1024 - 1));
   await writeFile(join(root, "above", "README.txt"), "y".repeat(256 * 1024) + "!");
   await writeFile(join(root, file), "\x1b[34m" + punctuation + "\x1b[0m \x1b[5munsupported style\x1b[0m\n");
-  return { file, punctuation };
+  const touchPath = "/touch-navigation";
+  const touchChild = touchPath + "/entry-40-folder";
+  await mkdir(join(root, touchChild), { recursive: true });
+  await writeFile(join(root, touchChild, "child-only.txt"), "Child file opened.\n");
+  // Files lists folders first, so the target folder needs preceding folders to exercise scrolling.
+  for (let i = 1; i <= 24; i++) {
+    await mkdir(join(root, touchPath, "directory-" + i));
+  }
+  for (let i = 1; i <= 29; i++) {
+    await writeFile(join(root, touchPath, "entry-" + String(i).padStart(2, "0") + ".txt"), "Mobile navigation entry " + i + "\n");
+  }
+  return { file, punctuation, touchPath, touchChild };
 }
 
 test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) => {
@@ -214,7 +225,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     t.diagnostic("Owned browser and server processes settled, local listeners closed, and scratch removed.");
   });
   const site = join(scratch, "served");
-  const { file, punctuation } = await fixture(site);
+  const { file, punctuation, touchPath, touchChild } = await fixture(site);
   const workA = join(scratch, "work-a");
   const workB = join(scratch, "work-b");
   await mkdir(workA);
@@ -229,6 +240,73 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     const text = key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {};
     await page.send("Input.dispatchKeyEvent", { type: "keyDown", ...options, ...text });
     await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...options });
+  }
+
+  async function tap(selector) {
+    const point = await page.evaluate(selector => {
+      const { left, top, width, height } = document.querySelector(selector).getBoundingClientRect();
+      return { x: left + width / 2, y: top + height / 2 };
+    }, selector);
+    await page.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+    await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  }
+
+  async function center(selector) {
+    await page.evaluate(selector => document.querySelector(selector).scrollIntoView({ block: "center" }), selector);
+  }
+
+  async function capture(label) {
+    if (!process.env.LSGET_SCREENSHOTS) return;
+    const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    await writeFile(join(process.env.LSGET_SCREENSHOTS, label + ".png"), Buffer.from(data, "base64"));
+  }
+
+  function holdNavigationResponses() {
+    return page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "(" + function () {
+        const fetchPage = window.fetch.bind(window);
+        const holds = new Map();
+        const armed = new Set();
+        const requests = [];
+        const settled = new Set();
+        window.navigationFixture = {
+          arm(key) { armed.add(key); },
+          release(key) { holds.get(key)?.(); },
+          releaseAll() { holds.forEach(release => release()); armed.clear(); },
+          holds, requests, settled,
+        };
+        window.fetch = async (url, options) => {
+          const { pathname, searchParams } = new URL(url, location.origin);
+          const data = options?.body && JSON.parse(options.body);
+          const key = pathname === "/api/config" ? "config " + searchParams.get("cwd")
+            : pathname === "/api/complete" ? "completion" : data?.input;
+          requests.push(pathname);
+          const response = await fetchPage(url, options);
+          if (armed.delete(key)) {
+            // Buffer the response so aborting the original network request
+            // cannot prevent late data reaching the application.
+            const late = new Response(await response.text(), { status: response.status, headers: response.headers });
+            await new Promise(resolve => holds.set(key, resolve));
+            holds.delete(key);
+            settled.add(key);
+            return late;
+          }
+          return response;
+        };
+      }.toString() + ")()",
+    });
+  }
+
+  async function releaseNavigationResponses(instrumentation) {
+    try {
+      await page.evaluate(async () => {
+        window.navigationFixture?.releaseAll();
+        await new Promise(requestAnimationFrame);
+        if (window.navigationFixture?.holds.size) throw new Error("Held browser response did not settle");
+      });
+    } finally {
+      await page.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: instrumentation.identifier });
+    }
   }
 
   async function speechOffset() {
@@ -394,40 +472,33 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     t.diagnostic("Typed pwd, recalled with ArrowUp, changed directory, and restored README on browser Back and Forward.");
   });
 
+  await t.test("Enter during an active composition does not submit the command", async () => {
+    await page.open(origin + "/rst?composition-fixture=1");
+    await page.wait('location.search === "?composition-fixture=1" && document.activeElement?.id === "command" && document.querySelector("#transcript .clickable-file")');
+    await page.evaluate(() => {
+      const field = document.getElementById("command");
+      window.composingEnter = [];
+      field.addEventListener("keydown", event => {
+        if (event.key === "Enter") window.composingEnter.push(event.isComposing);
+      });
+    });
+    const before = await page.evaluate('document.getElementById("transcript").childElementCount');
+    await page.send("Input.insertText", { text: "pwd" });
+    await page.send("Input.imeSetComposition", { text: "仮", selectionStart: 1, selectionEnd: 1 });
+    await key("Enter", 13);
+    assert.deepEqual(await page.evaluate("window.composingEnter"), [true]);
+    assert.equal(await page.evaluate('document.getElementById("command").value'), "pwd仮");
+    assert.equal(await page.evaluate('document.getElementById("transcript").childElementCount'), before);
+    await page.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
+    await key("Enter", 13);
+    await page.wait('document.getElementById("terminal-status").textContent === "/rst"');
+    assert.deepEqual(await page.evaluate("window.composingEnter"), [true, false]);
+    t.diagnostic("Chrome reported isComposing on Enter; the preedit and transcript stayed intact. Enter after composition ended ran pwd.");
+  });
+
   await t.test("Deep links, raced navigation, and completion keep the latest directory and input", async () => {
     await page.send("Page.enable");
-    const instrumentation = await page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: "(" + function () {
-        const fetchPage = window.fetch.bind(window);
-        const holds = new Map();
-        const armed = new Set();
-        const requests = [];
-        const settled = new Set();
-        window.navigationFixture = {
-          arm(key) { armed.add(key); },
-          release(key) { holds.get(key)?.(); },
-          releaseAll() { holds.forEach(release => release()); armed.clear(); },
-          holds, requests, settled,
-        };
-        window.fetch = async (url, options) => {
-          const endpoint = new URL(url, location.origin).pathname;
-          const data = options?.body && JSON.parse(options.body);
-          const key = endpoint === "/api/complete" ? "completion" : data?.input;
-          requests.push(endpoint);
-          const response = await fetchPage(url, options);
-          if (armed.delete(key)) {
-            // Buffer the response so aborting the original network request
-            // cannot prevent late data reaching the application.
-            const late = new Response(await response.text(), { status: response.status, headers: response.headers });
-            await new Promise(resolve => holds.set(key, resolve));
-            holds.delete(key);
-            settled.add(key);
-            return late;
-          }
-          return response;
-        };
-      }.toString() + ")()",
-    });
+    const instrumentation = await holdNavigationResponses();
     const directoryIs = (path, readme) => page.wait([
       'location.pathname === ' + JSON.stringify(path),
       'document.querySelector("#command-prompt")?.textContent === ' + JSON.stringify("guest@browser:" + path + "$ "),
@@ -496,15 +567,65 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       await page.evaluate('document.querySelector("#complete-command").click()');
       await page.wait('document.querySelector("#command").value === "cat README.md"');
       t.diagnostic("Two real API responses held and released. URL, prompt, README, history length, focused input and scrollback identity verified.");
+
+      const filePath = touchPath + "/entry-27.txt";
+      const childFilePath = touchChild + "/child-only.txt";
+      const entry = path => '.clickable-file[data-file=' + JSON.stringify(path) + ']';
+      const transcriptFocus = 'document.activeElement?.id === "transcript"';
+      const heldCommand = "cat " + filePath;
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+      for (const [width, height] of [[320, 640], [390, 844]]) {
+        const viewport = width + "x" + height;
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
+        await page.open(origin + touchPath + "?view=terminal&test=" + viewport);
+        await page.wait('location.search.endsWith(' + JSON.stringify(viewport) + ') && document.querySelector(' + JSON.stringify(entry(filePath)) + ')');
+        assert.equal(await page.evaluate('document.activeElement?.id === "command"'), false, viewport + " first load");
+        await page.evaluate(key => navigationFixture.arm(key), heldCommand);
+        await center(entry(filePath));
+        await tap(entry(filePath));
+        await page.wait('navigationFixture.holds.has(' + JSON.stringify(heldCommand) + ')');
+        assert.equal(await page.evaluate(transcriptFocus), true, viewport + " pending file");
+        await center(entry(touchChild));
+        await tap(entry(touchChild));
+        await page.wait('location.pathname === ' + JSON.stringify(touchChild) + ' && document.querySelector(' + JSON.stringify(entry(childFilePath)) + ')');
+        await page.evaluate(async key => {
+          navigationFixture.release(key);
+          await new Promise(requestAnimationFrame);
+        }, heldCommand);
+        assert.deepEqual(await page.evaluate(() => ({
+          path: location.pathname,
+          view: new URLSearchParams(location.search).get("view"),
+          prompt: document.getElementById("command-prompt").textContent,
+          focused: document.activeElement.id,
+          staleOutput: document.getElementById("transcript").textContent.includes("Mobile navigation entry 27"),
+          held: navigationFixture.holds.size,
+          settled: [...navigationFixture.settled],
+        })), {
+          path: touchChild, view: "terminal", prompt: "guest@browser:" + touchChild + "$ ",
+          focused: "transcript", staleOutput: false, held: 0, settled: [heldCommand],
+        });
+        await center(entry(childFilePath));
+        await tap(entry(childFilePath));
+        await page.wait('document.getElementById("terminal-status").textContent.trim() === "Child file opened."');
+        assert.equal(await page.evaluate(transcriptFocus), true, viewport + " completed file");
+        await capture("terminal-touch-result-" + viewport);
+        await page.evaluate("history.back()");
+        await page.wait('location.pathname === ' + JSON.stringify(touchPath));
+        assert.equal(await page.evaluate(transcriptFocus), true, viewport + " Terminal Back");
+
+        await tap("#command");
+        await page.send("Input.insertText", { text: "pwd" });
+        await key("Enter", 13);
+        await page.wait('document.getElementById("terminal-status").textContent === ' + JSON.stringify(touchPath));
+        assert.equal(await page.evaluate('document.activeElement?.id'), "command");
+        t.diagnostic(viewport + " touch activation and Back keep output focus, held response settled without stale output, and deliberate typing holds command focus.");
+      }
     } finally {
       try {
-        await page.evaluate(async () => {
-          window.navigationFixture?.releaseAll();
-          await new Promise(requestAnimationFrame);
-          if (window.navigationFixture?.holds.size) throw new Error("Held browser response did not settle");
-        });
+        await releaseNavigationResponses(instrumentation);
       } finally {
-        await page.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: instrumentation.identifier });
+        await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+        await page.send("Emulation.clearDeviceMetricsOverride");
         await page.send("Page.disable");
       }
     }
@@ -588,6 +709,10 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     await expectSpeech("Terminal command");
     await key("Tab", 9);
     assert.equal(await focus(), "complete-command");
+    await key("Tab", 9);
+    assert.equal(await focus(), "run-command");
+    await key("Tab", 9, 8);
+    assert.equal(await focus(), "complete-command");
     await key("Tab", 9, 8);
     assert.equal(await focus(), "command");
     await key("Tab", 9, 8);
@@ -622,12 +747,14 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       const role = value => nodes.find(node => !node.ignored && node.role?.value === value);
       const input = role("combobox");
       const live = role("status");
+      const run = nodes.find(node => !node.ignored && node.role?.value === "button" && node.name?.value === "Run");
       assert.equal(input.name.value, "Terminal command");
+      assert.ok(run, "Run is exposed as a named button");
       assert.equal(input.properties.find(property => property.name === "expanded").value.value, true);
       assert.equal(input.properties.find(property => property.name === "activedescendant").value.relatedNodes[0].idref, "completion-option-0");
       assert.equal(live.properties.find(property => property.name === "live").value.value, "polite");
       if (process.env.LSGET_SCREENSHOTS) {
-        const evidence = { input, live, listbox: role("listbox"), option: role("option") };
+        const evidence = { input, run, live, listbox: role("listbox"), option: role("option") };
         await writeFile(join(process.env.LSGET_SCREENSHOTS, "terminal-accessibility.json"), JSON.stringify(evidence, null, 2));
       }
     } finally {
@@ -695,19 +822,6 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
   await t.test("Touch, reduced motion and the desktop and mobile text-size matrix", async () => {
     await page.send("Page.enable");
     await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-    async function capture(label) {
-      if (!process.env.LSGET_SCREENSHOTS) return;
-      const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-      await writeFile(join(process.env.LSGET_SCREENSHOTS, label + ".png"), Buffer.from(data, "base64"));
-    }
-    async function tap(selector) {
-      const point = await page.evaluate(selector => {
-        const { left, top, width, height } = document.querySelector(selector).getBoundingClientRect();
-        return { x: left + width / 2, y: top + height / 2 };
-      }, selector);
-      await page.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
-      await page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    }
     try {
       for (const width of [360, 1280]) {
         const mobile = width === 360;
@@ -735,18 +849,19 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
             const panel = document.querySelector("#completions");
             const option = document.querySelector("[aria-selected=true]");
             const complete = document.querySelector("#complete-command");
+            const run = document.querySelector("#run-command");
             const inViewport = ({ left, top, right, bottom }) => left >= -1 && top >= -1 && right <= innerWidth + 1 && bottom <= innerHeight + 1;
             return {
               width: innerWidth, height: innerHeight, size: parseFloat(getComputedStyle(command).fontSize),
               below: panel.getBoundingClientRect().top >= command.getBoundingClientRect().bottom,
-              visible: [command, complete, panel, option].every(node => inViewport(node.getBoundingClientRect())),
+              visible: [command, complete, run, panel, option].every(node => inViewport(node.getBoundingClientRect())),
               wrap: document.documentElement.scrollWidth === innerWidth,
               reducedMotion: getComputedStyle(document.querySelector("#readme")).transitionDuration === "0s",
               textKeyboard: command.inputMode === "text" && command.enterKeyHint === "go",
               touchSize: complete.getBoundingClientRect().height >= 44,
             };
           });
-          if (!geometry.visible) t.diagnostic(JSON.stringify(await page.evaluate(() => Object.fromEntries(["command", "complete-command", "completions", "completion-option-0"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, { top: r.top, bottom: r.bottom, left: r.left, right: r.right }]; })))));
+          if (!geometry.visible) t.diagnostic(JSON.stringify(await page.evaluate(() => Object.fromEntries(["command", "complete-command", "run-command", "completions", "completion-option-0"].map(id => { const r = document.getElementById(id).getBoundingClientRect(); return [id, { top: r.top, bottom: r.bottom, left: r.left, right: r.right }]; })))));
           assert.deepEqual(geometry, {
             width, height: 800, size, below: true, visible: true, wrap: true,
             reducedMotion: true, textKeyboard: true, touchSize: mobile || size === 32,
@@ -768,6 +883,21 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
             await page.wait('!document.querySelector("#readme").inert && document.querySelector("#readme-toggle").getAttribute("aria-expanded") === "true"');
           } else {
             await key("Escape", 27);
+            assert.equal(await page.evaluate('document.getElementById("completions").hidden'), true);
+            await key("Tab", 9);
+            await key("Enter", 13);
+            await page.wait('document.getElementById("command").getAttribute("aria-expanded") === "true"');
+            await key("ArrowDown", 40);
+            await key("ArrowDown", 40);
+            await key("ArrowUp", 38);
+            await key("Enter", 13);
+            assert.equal(await page.evaluate('document.getElementById("command").value'), 'cat "read me two.txt"');
+            await key("Enter", 13);
+            await page.wait('document.getElementById("terminal-status").textContent === "Second path suggestion opened."');
+            await key("ArrowUp", 38);
+            assert.equal(await page.evaluate('document.getElementById("command").value'), 'cat "read me two.txt"');
+            await key("ArrowDown", 40);
+            await key("Tab", 9);
             await key("Tab", 9);
             await key("Tab", 9);
           }
@@ -785,8 +915,9 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
           await capture("readme-" + token);
           if (mobile) {
             await key("Escape", 27);
-            assert.equal(await page.evaluate("document.activeElement.id"), "command");
+            assert.equal(await page.evaluate("document.activeElement.id"), "readme-toggle");
             assert.equal(await page.evaluate('document.querySelector("#readme-toggle").getAttribute("aria-expanded")'), "false");
+            await page.wait('!history.state?.readme');
           }
           t.diagnostic(token + " command, completion, README and reduced-motion geometry verified");
         }
@@ -797,6 +928,244 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       await page.send("Emulation.setEmulatedMedia", { features: [] });
       await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 16 } });
       await page.send("Page.disable");
+    }
+  });
+
+  await t.test("Run and quoted path suggestions work by touch in portrait and short landscape", async () => {
+    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    try {
+      for (const [width, height] of [[320, 640], [390, 844], [844, 390]]) {
+        const viewport = width + "x" + height;
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
+        await page.open(origin + "/docs?touch-command=" + viewport);
+        await page.wait('location.search === ' + JSON.stringify("?touch-command=" + viewport) +
+          ' && document.querySelector("#readme h1")?.textContent === "Markdown fixture"');
+        await page.evaluate(() => {
+          window.submitTaps = [];
+          const run = document.getElementById("run-command");
+          run.addEventListener("click", event => window.submitTaps.push([event.isTrusted, event.pointerType]));
+        });
+        await tap("#command");
+        await page.send("Input.insertText", { text: "pwd" });
+        await capture("command-form-" + viewport);
+        await tap("#run-command");
+        await page.wait('document.getElementById("terminal-status").textContent === "/docs"');
+
+        await tap("#command");
+        await page.send("Input.insertText", { text: "cat read" });
+        await tap("#complete-command");
+        await page.wait('document.getElementById("command").getAttribute("aria-expanded") === "true"');
+        const geometry = await page.evaluate(() => {
+          const targets = ["command", "complete-command", "run-command", "completion-option-0"];
+          return {
+            viewport: [innerWidth, innerHeight],
+            hint: document.getElementById("completion-hint").textContent,
+            targets: Object.fromEntries(targets.map(id => {
+              const target = document.getElementById(id);
+              const { top, left, bottom, right, height, width } = target.getBoundingClientRect();
+              const hit = document.elementFromPoint(left + width / 2, top + height / 2);
+              return [id, { width, height, reachable: top >= 0 && left >= 0 && bottom <= innerHeight &&
+                right <= innerWidth && target.contains(hit) }];
+            })),
+          };
+        });
+        t.diagnostic(viewport + " touch command geometry " + JSON.stringify(geometry));
+        assert.deepEqual(geometry.viewport, [width, height]);
+        assert.match(geometry.hint, /Tap a path/);
+        for (const [label, target] of Object.entries(geometry.targets)) {
+          assert.ok(target.reachable && target.width >= 44 && target.height >= 44, viewport + " " + label);
+        }
+        await capture("command-suggestions-" + viewport);
+        await tap("#completion-option-0");
+        assert.equal(await page.evaluate('document.getElementById("command").value'), 'cat "read me two.txt"');
+        await tap("#run-command");
+        await page.wait('document.getElementById("terminal-status").textContent === "Second path suggestion opened."');
+        assert.deepEqual(await page.evaluate("window.submitTaps"), [[true, "touch"], [true, "touch"]]);
+      }
+    } finally {
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+    }
+  });
+
+  await t.test("Compact README history closes before leaving the folder and keeps focus available", async () => {
+    const parent = "/reader-navigation";
+    const child = parent + "/chapter";
+    const published = parent + "/published";
+    await mkdir(join(site, child), { recursive: true });
+    await mkdir(join(site, published), { recursive: true });
+    await writeFile(join(site, parent, "README.md"), "# Reader parent\n\nParent documentation.\n");
+    await writeFile(join(site, child, "README.md"), "# Reader chapter\n\nChapter documentation.\n");
+    await writeFile(join(site, published, "index.html"), "<h1>Published reader fixture</h1>");
+    const toggle = "#readme-toggle";
+    const childLink = '.clickable-file[data-file=' + JSON.stringify(child) + ']';
+    const inFolder = path => 'location.pathname === ' + JSON.stringify(path) +
+      ' && document.querySelector("#readme h1")?.textContent === ' +
+      JSON.stringify(path === parent ? "Reader parent" : "Reader chapter");
+    const blocking = 'document.querySelector(".terminal").inert';
+    const readmeVisible = 'document.querySelector("#readme").classList.contains("show")';
+    const toggleFocused = 'document.activeElement?.id === "readme-toggle"';
+    const entryClosed = '!history.state?.readme';
+    const viewport = (width, height, mobile = true) =>
+      page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
+    const go = delta => page.evaluate(delta => history.go(delta), delta);
+
+    async function startAtParent(token) {
+      const search = "?view=terminal&reader-fixture=" + token;
+      await page.open(origin + parent + search);
+      await page.wait('location.search === ' + JSON.stringify(search) + ' && ' + inFolder(parent));
+      await page.wait('document.querySelector(' + JSON.stringify(childLink) + ')');
+    }
+
+    async function enterChild(token) {
+      await startAtParent(token);
+      await center(childLink);
+      await tap(childLink);
+      await page.wait(inFolder(child) + ' && ' + entryClosed);
+    }
+
+    async function readmeOpened(path) {
+      await page.wait(inFolder(path) + ' && ' + blocking + ' && ' + readmeVisible +
+        ' && document.querySelector("#readme").getBoundingClientRect().top <= 1');
+      assert.deepEqual(await page.evaluate(() => {
+        const button = document.getElementById("readme-toggle");
+        const { width, height } = button.getBoundingClientRect();
+        return { label: button.getAttribute("aria-label"), expanded: button.getAttribute("aria-expanded"),
+          focus: document.activeElement.id, actionSize: width >= 44 && height >= 44 };
+      }), { label: "Close README", expanded: "true", focus: "readme", actionSize: true });
+    }
+
+    async function readmeClosed(path, { restoreFocus = true, baseEntry = true } = {}) {
+      await page.wait(inFolder(path) + ' && !(' + blocking + ') && !(' + readmeVisible + ')' +
+        (baseEntry ? ' && ' + entryClosed : ''));
+      assert.deepEqual(await page.evaluate(() => {
+        const button = document.getElementById("readme-toggle");
+        return { label: button.getAttribute("aria-label"), expanded: button.getAttribute("aria-expanded"),
+          panelInert: document.getElementById("readme").inert, focusedInert: Boolean(document.activeElement.closest("[inert]")) };
+      }), { label: "Show README", expanded: "false", panelInert: true, focusedInert: false });
+      if (restoreFocus) assert.equal(await page.evaluate(toggleFocused), true);
+    }
+
+    await page.send("Page.enable");
+    const instrumentation = await holdNavigationResponses();
+    try {
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+      for (const [width, height] of [[390, 844], [844, 390]]) {
+        const size = width + "x" + height;
+        await viewport(width, height);
+        for (const preference of ["no-preference", "reduce"]) {
+          await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: preference }] });
+          for (const dismissal of ["back", "close", "escape"]) {
+            await enterChild(size + "-" + preference + "-" + dismissal);
+            const childURL = await page.evaluate("location.href");
+            await tap(toggle);
+            await readmeOpened(child);
+            assert.equal(await page.evaluate("location.href"), childURL);
+            if (preference === "reduce") {
+              assert.equal(await page.evaluate('getComputedStyle(document.getElementById("readme")).transitionDuration'), "0s");
+            }
+            const takeCapture = preference === "no-preference" && dismissal === "back";
+            if (takeCapture) await capture("reader-open-" + size);
+            if (dismissal === "back") await go(-1);
+            else if (dismissal === "close") await tap(toggle);
+            else await key("Escape", 27);
+            await readmeClosed(child);
+            if (takeCapture) await capture("reader-closed-" + size);
+            await go(-1);
+            await readmeClosed(parent);
+          }
+          t.diagnostic(size + " " + preference + ": Back, Close and Escape returned focus to README; next Back reached the parent.");
+        }
+      }
+
+      await viewport(390, 844);
+      await enterChild("rotate");
+      await tap(toggle);
+      await readmeOpened(child);
+      await viewport(844, 390);
+      await page.wait("innerWidth === 844 && innerHeight === 390");
+      await readmeOpened(child);
+      await capture("reader-rotated-844x390");
+      await go(-1);
+      await readmeClosed(child);
+
+      await go(1);
+      await readmeOpened(child);
+      await viewport(1280, 800, false);
+      await page.wait("innerWidth === 1280 && " + entryClosed + ' && !(' + blocking + ')');
+      assert.equal(await page.evaluate('document.querySelector("#readme").contains(document.activeElement)'), true);
+      await go(-1);
+      await page.wait(inFolder(parent));
+      t.diagnostic("Portrait-to-landscape rotation kept the reader and focus; widening to desktop consumed the overlay entry.");
+
+      await viewport(390, 844);
+      await enterChild("stale-config");
+      await tap(toggle);
+      await readmeOpened(child);
+      await page.evaluate(path => navigationFixture.arm("config " + path), parent);
+      await go(-2);
+      await page.wait('location.pathname === ' + JSON.stringify(parent) +
+        ' && navigationFixture.holds.has(' + JSON.stringify("config " + parent) + ')');
+      assert.equal(await page.evaluate(blocking), false);
+      await go(1);
+      await readmeClosed(child);
+      await page.evaluate(async path => {
+        navigationFixture.release("config " + path);
+        await new Promise(requestAnimationFrame);
+      }, parent);
+      assert.deepEqual(await page.evaluate("Array.from(navigationFixture.settled)"), ["config " + parent]);
+      await readmeClosed(child);
+      await go(-1);
+      await readmeClosed(parent);
+      await go(2);
+      await readmeClosed(child, { baseEntry: false });
+      t.diagnostic("A real stale parent README response settled without replacing the newer chapter. A cross-folder jump to an overlay entry kept the reader closed.");
+
+      for (const destination of [child, published]) {
+        await startAtParent("pending-" + destination.split("/").at(-1));
+        const pending = "cd " + destination;
+        await page.evaluate(pending => navigationFixture.arm(pending), pending);
+        await command(pending);
+        await page.wait('navigationFixture.holds.has(' + JSON.stringify(pending) + ')');
+        await tap(toggle);
+        await readmeOpened(parent);
+        const release = await page.evaluate(async pending => {
+          navigationFixture.release(pending);
+          await Promise.resolve();
+          return { held: navigationFixture.holds.size, settled: [...navigationFixture.settled] };
+        }, pending);
+        assert.deepEqual(release, { held: 0, settled: [pending] });
+        if (destination === child) {
+          await readmeClosed(child);
+        } else {
+          await page.wait('document.querySelector("h1")?.textContent === "Published reader fixture"');
+        }
+        await go(-1);
+        await readmeClosed(parent, { restoreFocus: destination === child });
+      }
+      t.diagnostic("Pending cd commands consumed the old overlay entry when reaching a folder or a published index. Back reached the plain parent view.");
+
+      await enterChild("repeated-dismissal");
+      await tap(toggle);
+      await readmeOpened(child);
+      await page.evaluate(() => {
+        const button = document.getElementById("readme-toggle");
+        button.click();
+        button.click();
+      });
+      await readmeClosed(child);
+      await go(-1);
+      await readmeClosed(parent);
+      t.diagnostic("Two immediate Close activations consumed one reader entry.");
+    } finally {
+      try {
+        await releaseNavigationResponses(instrumentation);
+      } finally {
+        await page.send("Emulation.setEmulatedMedia", { features: [] });
+        await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+        await page.send("Emulation.clearDeviceMetricsOverride");
+        await page.send("Page.disable");
+      }
     }
   });
 
@@ -971,6 +1340,68 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       t.diagnostic("Native details opened by touch/Enter, Download focus and AX names verified, readonly share URL selected, exact binary bytes downloaded without page scripts; Chrome saved as " + savedName);
     } finally {
       await page.send("Emulation.setScriptExecutionDisabled", { value: false });
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await page.send("Emulation.clearDeviceMetricsOverride");
+    }
+  });
+
+  await t.test("Files starts at the top and Back restores the visible row after a file or child folder", async () => {
+    const listIs = path => 'location.pathname === ' + JSON.stringify(path) +
+      ' && document.querySelector("h1")?.textContent === ' + JSON.stringify("Index of " + path);
+    const position = selector => page.evaluate(selector => {
+      const { top, bottom } = document.querySelector(selector).getBoundingClientRect();
+      return {
+        scroll: scrollY, top,
+        visible: top >= document.querySelector("header").getBoundingClientRect().bottom && bottom <= innerHeight,
+      };
+    }, selector);
+    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    try {
+      for (const [width, height] of [[320, 640], [390, 844]]) {
+        const viewport = width + "x" + height;
+        await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
+        await page.open(origin + touchPath + "?view=files&test=" + viewport);
+        await page.wait(listIs(touchPath) + ' && location.search.endsWith(' + JSON.stringify(viewport) + ')');
+        const initial = await page.evaluate(() => {
+          const visible = selector => {
+            const { top, bottom } = document.querySelector(selector).getBoundingClientRect();
+            return top >= 0 && bottom <= innerHeight;
+          };
+          return { scroll: scrollY, rows: document.querySelectorAll(".file-row").length, up: visible(".up"), first: visible(".file-row") };
+        });
+        assert.deepEqual(initial, { scroll: 0, rows: 54, up: true, first: true });
+        await capture("files-entry-" + viewport);
+        for (const [label, destination] of [["file", touchPath + "/entry-27.txt"], ["child", touchChild]]) {
+          const selector = label === "file" ? '.file-row[href=' + JSON.stringify(destination) + ']'
+            : '.file-row[href^=' + JSON.stringify(destination + "?") + ']';
+          await center(selector);
+          const before = await position(selector);
+          assert.ok(before.scroll > 0 && before.visible, viewport + " before " + label);
+          await capture("files-" + label + "-before-" + viewport);
+          await tap(selector);
+          if (label === "file") {
+            await page.wait('location.pathname === ' + JSON.stringify(destination) + ' && document.body.textContent.includes("Mobile navigation entry 27")');
+          } else {
+            await page.wait(listIs(destination));
+            assert.deepEqual(await page.evaluate(() => {
+              const query = new URLSearchParams(location.search);
+              const up = document.querySelector(".up").getBoundingClientRect();
+              return { scroll: scrollY, up: up.top >= 0 && up.bottom <= innerHeight, view: query.get("view"), test: query.get("test") };
+            }), { scroll: 0, up: true, view: "files", test: viewport });
+          }
+          await page.evaluate("history.back()");
+          await page.wait(listIs(touchPath));
+          const after = await until(async () => {
+            const current = await position(selector);
+            return current.visible && Math.abs(current.scroll - before.scroll) <= 1 &&
+              Math.abs(current.top - before.top) <= 1 && current;
+          }, viewport + " native scroll restoration after " + label);
+          assert.equal(await page.evaluate('document.activeElement?.id === "command"'), false);
+          await capture("files-" + label + "-back-" + viewport);
+          t.diagnostic(viewport + " " + label + " " + JSON.stringify({ initial, before, after }));
+        }
+      }
+    } finally {
       await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
       await page.send("Emulation.clearDeviceMetricsOverride");
     }
