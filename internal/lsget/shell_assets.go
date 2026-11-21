@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -38,6 +39,7 @@ type shellAsset struct {
 }
 
 var shellAssets, shellAssetPath = indexShellAssets()
+var shellFaviconDataURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(embeddedFavicon)
 
 func indexShellAssets() (map[string]shellAsset, string) {
 	files := []struct {
@@ -46,7 +48,6 @@ func indexShellAssets() (map[string]shellAsset, string) {
 		contentType string
 	}{
 		{"marked.min.js", embeddedMarkedJS, "application/javascript; charset=utf-8"},
-		{"datastar.js", embeddedDatastarJS, "application/javascript; charset=utf-8"},
 		{"terminal.js", embeddedTerminalJS, "application/javascript; charset=utf-8"},
 		{"terminal-view.js", embeddedTerminalViewJS, "application/javascript; charset=utf-8"},
 		{shellFaviconName, embeddedFavicon, "image/png"},

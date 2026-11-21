@@ -11,7 +11,10 @@ const completionHint = document.getElementById("completion-hint");
 const completionOptions = document.getElementById("completion-options");
 const panel = document.getElementById("readme");
 const readmeToggle = document.getElementById("readme-toggle");
-const narrow = window.matchMedia("(max-width: 768px)");
+const compactReader = window.matchMedia(
+  "(max-width: 768px), (orientation: landscape) and (max-height: 450px) and (any-pointer: coarse)",
+);
+const touchScreen = window.matchMedia("(any-pointer: coarse)");
 const directoryError = document.getElementById("directory-error");
 const directoryErrorMessage = document.getElementById("directory-error-message");
 const retryDirectory = document.getElementById("retry-directory");
@@ -31,10 +34,24 @@ let commandRequest;
 let completionRequest;
 let suggestions = [];
 let selectedSuggestion = -1;
+let composing = false;
 let readmeOpen = false;
+let readmeClosing = false;
+let readmeRequest;
+let readmeLoaded = false;
 
 function focusInput() {
   input.focus({ preventScroll: true });
+}
+
+function focusNavigationResult(event) {
+  const touchActivation = event.pointerType === "touch" || event.pointerType === "pen" ||
+    (!event.pointerType && touchScreen.matches);
+  if (touchActivation) {
+    transcript.focus({ preventScroll: true });
+  } else {
+    focusInput();
+  }
 }
 
 function scrollTranscript() {
@@ -83,8 +100,27 @@ function rememberCommand(command) {
 }
 
 function setDirectory(path) {
+  if (path !== cwd) {
+    readmeRequest?.abort();
+    readmeRequest = undefined;
+    readmeLoaded = false;
+    panel.replaceChildren();
+    panel.scrollTop = 0;
+  }
   cwd = path;
   prompt.textContent = "guest@browser:" + path + "$ ";
+  document.getElementById("files-view")?.setAttribute("href", directoryURL(path, "files"));
+  document.getElementById("terminal-view")?.setAttribute("href", directoryURL(path, "terminal"));
+}
+
+function directoryURL(path, view = new URLSearchParams(window.location.search).get("view")) {
+  const url = new URL(terminalView.pathURL(path), window.location.origin);
+  url.search = window.location.search;
+  url.searchParams.delete("file");
+  url.searchParams.delete("nojs");
+  if (view === "files" || view === "terminal") url.searchParams.set("view", view);
+  else url.searchParams.delete("view");
+  return url.pathname + url.search;
 }
 
 function clearCompletion() {
@@ -124,28 +160,50 @@ function acceptSuggestion(index) {
   announce("Completed " + suggestion.name + ".");
 }
 
-function updateReadme() {
-  const open = narrow.matches && readmeOpen;
-  panel.classList.toggle("show", open);
-  panel.inert = narrow.matches && !open;
-  terminal.inert = open;
-  readmeToggle.setAttribute("aria-expanded", String(open));
-  readmeToggle.setAttribute("aria-label", open ? "Close README" : "Show README");
-  readmeToggle.textContent = open ? "Close README" : "README";
+function updateReadme(open = false) {
+  const wasOpen = readmeOpen;
+  const previousFocus = document.activeElement;
+  readmeOpen = compactReader.matches && open;
+  panel.classList.toggle("show", readmeOpen);
+  panel.inert = compactReader.matches && !readmeOpen;
+  terminal.inert = readmeOpen;
+  readmeToggle.setAttribute("aria-expanded", String(readmeOpen));
+  readmeToggle.setAttribute("aria-label", readmeOpen ? "Close README" : "Show README");
+  readmeToggle.textContent = readmeOpen ? "Close README" : "README";
+  if (readmeOpen && !wasOpen) {
+    panel.focus({ preventScroll: true });
+  } else if (panel.inert && (wasOpen || panel.contains(previousFocus))) {
+    readmeToggle.focus({ preventScroll: true });
+  } else if (!compactReader.matches && previousFocus === readmeToggle) {
+    panel.focus({ preventScroll: true });
+  }
 }
 
-function setReadmeOpen(open) {
-  readmeOpen = open;
+function closeReadme() {
+  // Close and Escape consume the same entry as Back. Ignore repeated dismissal
+  // while the history traversal is still pending.
+  if (readmeClosing) return;
+  readmeClosing = true;
   updateReadme();
-  if (open) {
-    panel.focus({ preventScroll: true });
-  } else {
-    focusInput();
+  window.history.back();
+}
+
+function toggleReadme() {
+  if (!compactReader.matches || readmeClosing) return;
+  if (readmeOpen) {
+    closeReadme();
+    return;
   }
+  if (window.history.state?.readme !== true) {
+    window.history.pushState({ cwd, readme: true }, "");
+  }
+  updateReadme(true);
+  void loadReadme();
 }
 
 async function requestJSON(endpoint, directory, request, body) {
   const query = new URLSearchParams({ cwd: directory });
+  if (endpoint === "exec") query.set("readme", "0");
   const response = await fetch("/api/" + endpoint + "?" + query, {
     signal: request.signal,
     cache: "no-store",
@@ -173,12 +231,8 @@ async function loadDirectory() {
   const request = new AbortController();
   directoryRequest = request;
   directoryError.hidden = true;
-  const directory = cwd;
   try {
-    const response = await requestJSON("config", directory, request);
-    if (request.signal.aborted) return;
-    terminalView.readme(panel, response);
-    await listDirectory(directory, request);
+    await listDirectory(cwd, request);
   } catch (error) {
     if (request.signal.aborted) return;
     directoryErrorMessage.textContent = "Could not load this directory (" + error.message + ").";
@@ -187,6 +241,45 @@ async function loadDirectory() {
   } finally {
     if (directoryRequest === request) directoryRequest = undefined;
   }
+}
+
+function readmeNotice(text) {
+  const notice = document.createElement("p");
+  notice.className = "readme-notice";
+  notice.setAttribute("role", "status");
+  notice.textContent = text;
+  panel.replaceChildren(notice);
+}
+
+async function loadReadme() {
+  if (readmeLoaded || readmeRequest) return;
+  const request = new AbortController();
+  readmeRequest = request;
+  readmeNotice("Loading README…");
+  try {
+    const response = await requestJSON("config", cwd, request);
+    if (request.signal.aborted) return;
+    await terminalView.readme(panel, response, request.signal);
+    if (!request.signal.aborted) readmeLoaded = true;
+  } catch {
+    if (request.signal.aborted) return;
+    readmeNotice("Could not load the README.");
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "terminal-control";
+    retry.textContent = "Retry README";
+    retry.addEventListener("click", () => {
+      panel.focus({ preventScroll: true });
+      void loadReadme();
+    });
+    panel.append(retry);
+  } finally {
+    if (readmeRequest === request) readmeRequest = undefined;
+  }
+}
+
+function loadVisibleReadme() {
+  if (!compactReader.matches || readmeOpen) void loadReadme();
 }
 
 async function copyURL(url, request) {
@@ -249,20 +342,33 @@ async function runCommand(command, listAfterCd = false) {
       ? terminalView.sameOriginURL(terminalView.pathURL(redirect))
       : null;
     if (destination) {
-      window.location.assign(destination);
+      if (window.history.state?.readme === true) {
+        updateReadme();
+        window.location.replace(destination);
+      } else {
+        window.location.assign(destination);
+      }
       return;
     }
-    if (typeof response.cwd === "string" && typeof response.readme === "string") {
-      directoryRequest?.abort();
-      directoryError.hidden = true;
-      clearCompletion();
-      terminalView.readme(panel, response);
-      if (response.cwd !== cwd) {
+    if (typeof response.cwd === "string") {
+      const changedDirectory = response.cwd !== cwd;
+      if (changedDirectory) {
+        directoryRequest?.abort();
+        directoryError.hidden = true;
+        clearCompletion();
+        updateReadme();
         setDirectory(response.cwd);
-        window.history.pushState({ cwd }, "", terminalView.pathURL(cwd));
+        // A command may finish while the reader is open. Replace its entry so
+        // directory Back still lands on the previous folder with the reader closed.
+        if (window.history.state?.readme === true) {
+          window.history.replaceState({ cwd }, "", directoryURL(cwd));
+        } else {
+          window.history.pushState({ cwd }, "", directoryURL(cwd));
+        }
         announce("Directory " + cwd + ".");
       }
-      if (listAfterCd) await listDirectory(cwd, request);
+      if (listAfterCd) void loadDirectory();
+      if (changedDirectory) loadVisibleReadme();
     }
   } catch (error) {
     if (!request.signal.aborted) {
@@ -331,7 +437,11 @@ async function completeInput() {
     completionOptions.hidden = false;
     input.setAttribute("aria-expanded", "true");
     const count = (truncated ? "Showing " : "") + suggestions.length + " paths.";
-    showCompletion(count + " ↑/↓ then Enter", count + " Use the up or down arrow, then Enter.");
+    if (touchScreen.matches) {
+      showCompletion(count + " Tap a path.", count + " Tap a path, or use the up or down arrow, then Enter.");
+    } else {
+      showCompletion(count + " ↑/↓ then Enter", count + " Use the up or down arrow, then Enter.");
+    }
   } catch (error) {
     if (request.signal.aborted) return;
     showCompletion(error.message === "HTTP 503"
@@ -344,6 +454,8 @@ async function completeInput() {
 
 input.addEventListener("input", clearCompletion);
 input.addEventListener("blur", clearCompletion);
+input.addEventListener("compositionstart", () => { composing = true; });
+input.addEventListener("compositionend", () => { composing = false; });
 
 completeButton.addEventListener("click", () => {
   focusInput();
@@ -358,10 +470,8 @@ completionOptions.addEventListener("click", event => {
 
 form.addEventListener("submit", event => {
   event.preventDefault();
-  if (selectedSuggestion >= 0) {
-    acceptSuggestion(selectedSuggestion);
-    return;
-  }
+  // A composing Enter can also trigger an implicit form submission.
+  if (composing) return;
   const command = input.value;
   rememberCommand(command);
   setInput("");
@@ -369,10 +479,14 @@ form.addEventListener("submit", event => {
 });
 
 input.addEventListener("keydown", event => {
-  if (event.isComposing) return;
+  if (event.isComposing || composing) return;
   const key = event.key;
   if (key === "Enter") {
-    form.requestSubmit();
+    if (selectedSuggestion >= 0) {
+      acceptSuggestion(selectedSuggestion);
+    } else {
+      form.requestSubmit();
+    }
   } else if (key === "Escape" && (completionRequest || !completions.hidden)) {
     clearCompletion();
     announce("Path suggestions closed.");
@@ -417,7 +531,7 @@ transcript.addEventListener("click", event => {
   if (window.getSelection()?.type === "Range") return;
   const item = event.target.closest(".clickable-file");
   if (!item) return;
-  focusInput();
+  focusNavigationResult(event);
   const { cmd, file } = item.dataset;
   const command = cmd + " " + quoteOperand(file);
   rememberCommand(command);
@@ -425,40 +539,48 @@ transcript.addEventListener("click", event => {
   event.preventDefault();
 });
 
-// Datastar invokes this action from the shell's data-on-click attribute.
-window.terminalView = { toggleReadme: () => setReadmeOpen(!readmeOpen) };
-narrow.addEventListener("change", () => {
-  const restoreFocus = narrow.matches &&
-    (panel.contains(document.activeElement) || document.activeElement === readmeToggle);
-  readmeOpen = false;
-  updateReadme();
-  if (restoreFocus) focusInput();
+readmeToggle.addEventListener("click", toggleReadme);
+compactReader.addEventListener("change", () => {
+  if (!compactReader.matches && readmeOpen) {
+    closeReadme();
+  } else {
+    updateReadme();
+  }
+  loadVisibleReadme();
 });
 layout.addEventListener("keydown", event => {
   if (event.key === "Escape" && readmeOpen) {
-    setReadmeOpen(false);
+    closeReadme();
     event.preventDefault();
   }
 });
-retryDirectory.addEventListener("click", () => {
-  focusInput();
+retryDirectory.addEventListener("click", event => {
+  focusNavigationResult(event);
   void loadDirectory();
+  loadVisibleReadme();
 });
 
 window.addEventListener("popstate", event => {
   const path = event.state?.cwd || decodeURIComponent(window.location.pathname);
-  if (path === cwd) return;
+  const sameDirectory = path === cwd;
+  readmeClosing = false;
+  updateReadme(sameDirectory && event.state?.readme === true);
+  if (sameDirectory) {
+    loadVisibleReadme();
+    return;
+  }
   commandRequest?.abort();
   clearCompletion();
-  panel.replaceChildren();
   setDirectory(path);
   announce("Directory " + cwd + ".");
   void loadDirectory();
+  loadVisibleReadme();
 });
 
 setDirectory(cwd);
 updateReadme();
 window.history.replaceState({ cwd }, "", terminalView.pathURL(cwd) + window.location.search + window.location.hash);
 appendTranscript(terminalView.appendHelp);
-focusInput();
+if (!touchScreen.matches) focusInput();
 void loadDirectory();
+loadVisibleReadme();

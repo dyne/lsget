@@ -212,6 +212,8 @@ func (b readOnlyBrowser) checkBrowsing(note string) {
 		{"/site/", "<p>Hosted index</p>"},
 		{"/?nojs=1", `href="/nested?nojs=1"`},
 		{"/nested/?nojs=1", `href="/nested/note.txt"`},
+		{"/?view=files", `href="/nested?view=files"`},
+		{"/nested/?view=files", `href="/nested/note.txt"`},
 	} {
 		body, _ := b.get(page.path, http.StatusOK, "text/html")
 		if !strings.Contains(body, page.marker) || strings.Contains(body, "ignored.txt") {

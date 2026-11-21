@@ -28,12 +28,16 @@ func TestShellAssets(t *testing.T) {
 	if shell.Code != http.StatusOK || shell.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("shell response: status %d, cache %q", shell.Code, shell.Header().Get("Cache-Control"))
 	}
-	for _, name := range []string{"marked.min.js", "datastar.js", "terminal.js"} {
-		if !strings.Contains(shell.Body.String(), `src="`+shellAssetPath+name+`"`) {
-			t.Errorf("missing versioned script %s", name)
+	body := shell.Body.String()
+	if !strings.Contains(body, `src="`+shellAssetPath+`terminal.js"`) {
+		t.Error("missing versioned terminal entry script")
+	}
+	for _, name := range []string{"marked.min.js", "datastar.js"} {
+		if strings.Contains(body, `src="`+shellAssetPath+name+`"`) {
+			t.Errorf("initial shell references %s", name)
 		}
 	}
-	for _, name := range []string{"marked.min.js", "datastar.js", "terminal.js", "terminal-view.js"} {
+	for _, name := range []string{"marked.min.js", "terminal.js", "terminal-view.js"} {
 		t.Run(name, func(t *testing.T) {
 			path := shellAssetPath + name
 			get := request(http.MethodGet, path, "")

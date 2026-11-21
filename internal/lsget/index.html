@@ -7,12 +7,31 @@
 
     <!-- No-JS fallback: redirect to plain HTML version -->
     <noscript>
-      <meta http-equiv="refresh" content="0; url=?nojs=1" />
+      <meta http-equiv="refresh" content="0; url={{NOJS_URL}}" />
     </noscript>
 
-    <script nonce="{{CSP_NONCE}}" src="{{SHELL_ASSET_PATH}}marked.min.js"></script>
-    <script nonce="{{CSP_NONCE}}" type="module" src="{{SHELL_ASSET_PATH}}terminal.js"></script>
-    <script nonce="{{CSP_NONCE}}" type="module" src="{{SHELL_ASSET_PATH}}datastar.js"></script>
+    {{TERMINAL_ASSETS_OPEN}}
+    {{SHELL_ICON}}
+    <script id="terminal-script" nonce="{{CSP_NONCE}}" type="module" src="{{SHELL_ASSET_PATH}}terminal.js"></script>
+    {{TERMINAL_ASSETS_CLOSE}}
+    <script nonce="{{CSP_NONCE}}" data-files-url="{{FILES_VIEW_URL}}">
+      (() => {
+        const assets = document.getElementById("terminal-assets");
+        if (!assets) return;
+        const compactTouch = matchMedia(
+          "(any-pointer: coarse) and (max-width: 768px), " +
+          "(any-pointer: coarse) and (orientation: landscape) and (max-height: 450px)",
+        );
+        if (compactTouch.matches) {
+          location.replace(document.currentScript.dataset.filesUrl + location.hash);
+          return;
+        }
+        // Terminal needs the DOM.
+        document.addEventListener("DOMContentLoaded", () => {
+          document.head.append(document.importNode(assets.content, true));
+        }, { once: true });
+      })();
+    </script>
 
     <style nonce="{{CSP_NONCE}}">
       :root {
@@ -122,11 +141,15 @@
         gap: 0.25rem;
         overflow-y: auto;
       }
+      .view-switch { display: flex; flex-wrap: wrap; gap: .25rem .5em; font-size: .875em; }
+      .view-switch a { display: inline-flex; align-items: center; min-height: 44px; padding-block: .5rem; color: var(--ctp-frappe-lavender); text-underline-offset: .2em; }
+      .view-switch a[aria-current] { font-weight: 700; text-decoration-thickness: 2px; }
+      .view-switch a:focus-visible { outline: 3px solid var(--ctp-frappe-yellow); outline-offset: -3px; }
       #transcript {
         padding: 0.2rem;
         overflow: auto;
         flex: 1;
-        min-block-size: 2em;
+        min-block-size: 1em;
         text-shadow:
           0 0 2px currentColor,
           0 0 6px currentColor;
@@ -138,6 +161,7 @@
         flex: 1;
         padding: 1rem;
         overflow: auto;
+        overflow-wrap: anywhere;
         border-left: 1px solid var(--term-border);
         background: var(--ctp-latte-base);
         color: var(--ctp-latte-text);
@@ -168,7 +192,7 @@
       }
 
       /* Responsive styles */
-      @media (max-width: 768px) {
+      @media (max-width: 768px), (orientation: landscape) and (max-height: 450px) and (any-pointer: coarse) {
         .layout {
           flex-direction: column;
         }
@@ -229,7 +253,6 @@
       .readme h4,
       .readme h5,
       .readme h6 {
-        color: var(--ctp-latte-blue);
         border-bottom: 2px solid var(--ctp-latte-surface1);
         padding-bottom: 0.3em;
       }
@@ -265,19 +288,7 @@
         color: var(--ctp-latte-red);
       }
       .readme h2 {
-        color: var(--ctp-latte-peach);
-      }
-      .readme h3 {
-        color: var(--ctp-latte-yellow);
-      }
-      .readme h4 {
-        color: var(--ctp-latte-green);
-      }
-      .readme h5 {
-        color: var(--ctp-latte-teal);
-      }
-      .readme h6 {
-        color: var(--ctp-latte-blue);
+        color: var(--ctp-latte-mauve);
       }
 
       .readme p {
@@ -286,13 +297,22 @@
       }
 
       .readme a {
-        color: var(--ctp-latte-sapphire);
-        text-decoration: none;
+        color: var(--ctp-latte-mauve);
+        text-decoration: underline;
+        text-underline-offset: 0.14em;
+      }
+
+      .readme th :is(a, strong, em) {
+        color: inherit;
       }
 
       .readme a:hover {
-        color: var(--ctp-latte-blue);
-        text-decoration: underline;
+        text-decoration-thickness: 0.1em;
+      }
+
+      .readme a:active {
+        color: var(--ctp-latte-text);
+        text-decoration-thickness: 0.15em;
       }
 
       .readme img {
@@ -306,7 +326,7 @@
 
       .readme code {
         background: var(--ctp-latte-surface0);
-        color: var(--ctp-latte-red);
+        color: var(--ctp-latte-text);
         padding: 0.2em 0.4em;
         border-radius: 3px;
         font-size: 0.9em;
@@ -332,7 +352,7 @@
         border-left: 4px solid var(--ctp-latte-mauve);
         margin: 0;
         padding-left: 1em;
-        color: var(--ctp-latte-subtext0);
+        color: var(--ctp-latte-subtext1);
         font-style: italic;
       }
 
@@ -370,7 +390,6 @@
 
       .readme th {
         background: var(--ctp-latte-surface0);
-        color: var(--ctp-latte-blue);
         font-weight: bold;
       }
 
@@ -401,10 +420,12 @@
       .ps1 {
         color: var(--ctp-frappe-green);
       }
-      .help-version { color: #666; }
-      .help-note { color: #888; }
-      .help-heading { color: #aaa; }
-      .help-description { color: #bbb; }
+      .help-version,
+      .help-note,
+      .help-description {
+        color: var(--ctp-frappe-subtext1);
+      }
+      .help-heading { font-weight: 600; }
       .input {
         color: var(--ctp-frappe-text);
       }
@@ -428,6 +449,12 @@
       .readme:focus-visible {
         outline-color: var(--ctp-latte-blue);
         outline-offset: -2px;
+      }
+      .readme :is(a, button):focus-visible {
+        outline-offset: 2px;
+      }
+      .mobile-toggle[aria-expanded="true"]:focus-visible {
+        outline-color: var(--ctp-latte-blue);
       }
       .out {
         color: var(--ctp-frappe-text);
@@ -470,6 +497,20 @@
         align-items: baseline;
         gap: 0.35rem 0.65rem;
       }
+      .command-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        max-inline-size: 100%;
+      }
+      #run-command {
+        color: var(--ctp-frappe-base);
+        background: var(--ctp-frappe-blue);
+        border-color: transparent;
+      }
+      #run-command:active {
+        background: var(--ctp-frappe-sapphire);
+      }
       .terminal-input {
         flex: 1;
         min-inline-size: min(10ch, 100%);
@@ -511,11 +552,25 @@
         color: var(--ctp-frappe-base);
         background: var(--olivetti);
       }
-      @media (pointer: coarse) {
+      @media (any-pointer: coarse) {
         .terminal-control,
         .terminal-input,
         #completion-options li {
           min-block-size: 44px;
+        }
+        .command-actions .terminal-control {
+          min-inline-size: 44px;
+        }
+      }
+      @media (orientation: landscape) and (max-height: 450px) {
+        .terminal {
+          padding-block-end: 0.5rem;
+        }
+        #completion-hint {
+          margin-block: 0.125em;
+        }
+        #completion-options {
+          max-block-size: min(28vh, 6rem);
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -548,6 +603,10 @@
     >
       <section class="terminal" aria-label="Terminal">
         <div id="screen" class="screen">
+          <nav class="view-switch" aria-label="Directory view">
+            <a id="files-view" href="{{FILES_VIEW_URL}}">Files</a>
+            <a id="terminal-view" href="{{TERMINAL_VIEW_URL}}" aria-current="page">Terminal</a>
+          </nav>
           <div id="transcript" role="region" aria-label="Terminal output" tabindex="0"></div>
           <form id="command-form">
             <div class="command-row">
@@ -568,9 +627,12 @@
                 aria-controls="completion-options"
                 aria-expanded="false"
               />
-              <button class="terminal-control" id="complete-command" type="button">Complete</button>
+              <div class="command-actions">
+                <button class="terminal-control" id="complete-command" type="button">Complete</button>
+                <button class="terminal-control" id="run-command" type="submit">Run</button>
+              </div>
             </div>
-            <span class="visually-hidden" id="command-help">Press Enter to run a command. Use Complete for path suggestions.</span>
+            <span class="visually-hidden" id="command-help">Press Enter or use Run to submit. Use Complete for path suggestions.</span>
             <div id="completions" hidden>
               <p id="completion-hint"></p>
               <ul id="completion-options" role="listbox" aria-label="Path suggestions" hidden></ul>
@@ -593,7 +655,6 @@
         class="mobile-toggle"
         id="readme-toggle"
         type="button"
-        data-on-click="terminalView.toggleReadme()"
         aria-controls="readme"
         aria-expanded="false"
         aria-label="Show README"

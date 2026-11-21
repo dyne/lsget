@@ -148,7 +148,7 @@ func TestSiteMetadata(t *testing.T) {
 			`<meta property="og:url" content="`+canonical+`" />`,
 			`<meta property="og:image" content="https://img.example/caf%C3%A9.png?v=2&amp;width=640" />`,
 			`<noscript>`)
-		omits(t, w, "untrusted.example", "forwarded.example", "/forged", "?from=preview", "ZgotmplZ")
+		omits(t, w, "untrusted.example", "forwarded.example", "/forged", "ZgotmplZ")
 		for _, route := range []string{"/", "/missing"} {
 			contains(t, request(http.MethodGet, route, ""), `<link rel="canonical" href="https://public.example:8443/releases%20here/" />`)
 		}
@@ -170,7 +170,10 @@ func TestSiteMetadata(t *testing.T) {
 		}
 		plain := request(http.MethodGet, directory+"?nojs=1", "")
 		contains(t, plain, "<h1>Index of ")
-		omits(t, plain, "og:title", "canonical", "og:image")
+		omits(t, plain, "og:title", "og:image")
+		contains(t, plain, `<link rel="canonical" href="`+canonical+`">`)
+		// Files now carries directory canonical metadata; other fallback bytes stay independent of site metadata.
+		plain.Body = bytes.NewBufferString(strings.Replace(plain.Body.String(), `<link rel="canonical" href="`+canonical+`">`, "", 1))
 		sameResponse("?nojs=1", plainBefore.Body.String(), plainBefore, plain)
 		s.devTemplate = devPath
 		currentDev := request(http.MethodGet, directory, "")

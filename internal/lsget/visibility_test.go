@@ -126,7 +126,7 @@ func TestReadVisibilityMatrix(t *testing.T) {
 	})
 
 	t.Run("directory indexes", func(t *testing.T) {
-		for _, target := range []string{"/landing", "/landing?nojs=1"} {
+		for _, target := range []string{"/landing", "/landing?nojs=1", "/landing?view=files"} {
 			w := request(t, http.MethodGet, target, nil, nil)
 			if w.Code != http.StatusOK || w.Body.String() != "<html>public index</html>" {
 				t.Errorf("%s returned %d %q", target, w.Code, w.Body.String())
@@ -143,6 +143,10 @@ func TestReadVisibilityMatrix(t *testing.T) {
 
 	t.Run("directory listings and completion", func(t *testing.T) {
 		noJS := request(t, http.MethodGet, "/docs?nojs=1", nil, nil)
+		files := request(t, http.MethodGet, "/docs?view=files", nil, nil)
+		if strings.ReplaceAll(noJS.Body.String(), "?nojs=1", "?view=files") != files.Body.String() {
+			t.Error("Files and legacy no-JS listings differ")
+		}
 		listing := exec(t, "ls -la /docs").Output
 		if noJS.Code != http.StatusOK || !strings.Contains(noJS.Body.String(), `href="/docs/r%C3%A9sum%C3%A9%20%231.txt"`) || !strings.Contains(listing, publicName) {
 			t.Fatalf("public entry missing from browser or terminal listing")
@@ -257,6 +261,15 @@ func TestReadVisibilityMatrix(t *testing.T) {
 			t.Skipf("Unix socket fixture unavailable: %v", err)
 		}
 		defer func() { _ = listener.Close() }()
+		for _, query := range []string{"?view=files", "?nojs=1"} {
+			listing := request(t, http.MethodGet, "/"+query, nil, nil)
+			if strings.Contains(listing.Body.String(), `href="/socket`) {
+				t.Error("directory listing included a socket")
+			}
+			if got := request(t, http.MethodGet, "/socket"+query, nil, nil); got.Code != http.StatusNotFound {
+				t.Errorf("socket served with %s: HTTP %d", query, got.Code)
+			}
+		}
 		if _, ok := complete(t, "/sock", false)["socket"]; ok {
 			t.Error("completion included a socket")
 		}

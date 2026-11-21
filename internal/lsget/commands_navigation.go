@@ -134,14 +134,16 @@ func (c *terminalCommand) changeDirectory() {
 		return
 	}
 
-	readme, docType, readmeTruncated := readDocFile(ctx, c.root, name)
+	// The browser asks for the preview separately so navigation does not wait for it.
+	response := execResp{CWD: newV}
+	if c.request.URL.Query().Get("readme") != "0" {
+		readme, docType, truncated := readDocFile(ctx, c.root, name)
+		response.Readme, response.DocType, response.ReadmeTruncated = &readme, docType, truncated
+	}
 	if ctx.Err() != nil {
 		return
 	}
-	// Include the new CWD in the response so client can update URL
-	c.respond(execResp{
-		CWD: newV, Readme: &readme, DocType: docType, ReadmeTruncated: readmeTruncated,
-	})
+	c.respond(response)
 }
 
 func formatLong(info os.FileInfo, name string, humanReadable bool) string {
