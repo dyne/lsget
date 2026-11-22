@@ -86,7 +86,7 @@ func TestFilesActions(t *testing.T) {
 	}{
 		{`résumé # <&".txt`, "Text fixture\n", false},
 		{"image & #.png", "\x89PNG\r\n\x1a\nimage", false},
-		{"document #.pdf", "%PDF-1.4\nfixture", true},
+		{"document #.PDF", "%PDF-1.4\nfixture", false},
 		{"archive &.zip", "PK\x03\x04archive", true},
 		{"unknown #.bin", "\x00\x01\x02\x03\xffunknown", false},
 	}

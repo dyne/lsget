@@ -266,21 +266,25 @@ func (b readOnlyBrowser) checkChecksum(path, note string) {
 
 func (b readOnlyBrowser) checkDownloads(note string) {
 	b.t.Helper()
-	for _, prefix := range []string{"/", "/?file=/", "/api/download?path=/"} {
-		path := prefix + "nested/report.pdf"
+	for _, route := range []struct{ prefix, disposition string }{
+		{"/", `inline; filename="report.pdf"`},
+		{"/?file=/", `inline; filename="report.pdf"`},
+		{"/api/download?path=/", `attachment; filename="report.pdf"`},
+	} {
+		path := route.prefix + "nested/report.pdf"
 		body, headers := b.get(path, http.StatusOK, "application/pdf")
-		const disposition = `attachment; filename="report.pdf"`
-		if body != readOnlyPDF || headers.Get("Content-Disposition") != disposition {
-			b.t.Errorf("%s did not return the expected PDF attachment", path)
+		if body != readOnlyPDF || headers.Get("Content-Disposition") != route.disposition {
+			b.t.Errorf("%s returned PDF disposition %q, want %q", path, headers.Get("Content-Disposition"), route.disposition)
 		}
 		body, headers = b.request(http.MethodHead, path, nil, nil, http.StatusOK, "application/pdf")
 		if body != "" || headers.Get("Content-Length") != strconv.Itoa(len(readOnlyPDF)) ||
-			headers.Get("Content-Disposition") != disposition {
+			headers.Get("Content-Disposition") != route.disposition {
 			b.t.Errorf("HEAD %s returned body length %d and headers %v", path, len(body), headers)
 		}
 		rangeHeader := http.Header{"Range": {"bytes=0-7"}}
 		body, headers = b.request(http.MethodGet, path, nil, rangeHeader, http.StatusPartialContent, "application/pdf")
-		if body != readOnlyPDF[:8] || headers.Get("Content-Range") != fmt.Sprintf("bytes 0-7/%d", len(readOnlyPDF)) {
+		if body != readOnlyPDF[:8] || headers.Get("Content-Range") != fmt.Sprintf("bytes 0-7/%d", len(readOnlyPDF)) ||
+			headers.Get("Content-Disposition") != route.disposition {
 			b.t.Errorf("range %s returned %q and headers %v", path, body, headers)
 		}
 		if modified := headers.Get("Last-Modified"); modified != "" {
@@ -289,7 +293,7 @@ func (b readOnlyBrowser) checkDownloads(note string) {
 		} else {
 			b.t.Errorf("%s omitted Last-Modified", path)
 		}
-		b.get(prefix+"nested/ignored.txt", http.StatusNotFound, "")
+		b.get(route.prefix+"nested/ignored.txt", http.StatusNotFound, "")
 	}
 
 	body, _ := b.get("/api/download?dir=/nested", http.StatusOK, "application/zip")

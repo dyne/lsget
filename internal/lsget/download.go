@@ -122,12 +122,18 @@ func serveDownloadFile(w http.ResponseWriter, r *http.Request, root *os.Root, fi
 		contentType = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", contentType)
+	var disposition string
 	switch strings.ToLower(ext) {
-	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar", ".7z", ".tar", ".gz":
-		attachment = true
+	case ".pdf":
+		disposition = "inline"
+	case ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar", ".7z", ".tar", ".gz":
+		disposition = "attachment"
 	}
 	if attachment {
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		disposition = "attachment"
+	}
+	if disposition != "" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, filename))
 	}
 	http.ServeContent(w, r, filename, info.ModTime(), file)
 }
