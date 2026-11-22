@@ -930,6 +930,67 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     t.diagnostic("Chrome saved the exact file bytes from the terminal download command.");
   });
 
+  await t.test("Terminal listings open text and download archives and uncolored files", async () => {
+    const directory = "/click-files";
+    const folder = join(site, directory);
+    const downloads = join(scratch, "clicked-downloads");
+    await mkdir(join(folder, "child"), { recursive: true });
+    await mkdir(downloads);
+    const texts = new Map([
+      ["note.txt", "Text file opened by click."],
+      ["notes.MD", "Markdown file opened by click."],
+      ["settings.json", '{"opened":"by click"}'],
+    ]);
+    const binaries = new Map([
+      ["dynebolic-git.tar.bz2", Buffer.from([0x42, 0x5a, 0x68, 0x00])],
+      ["package.deb", Buffer.from([0x21, 0x3c, 0x61, 0xff])],
+      ["live [x].iso", Buffer.from([0x00, 0x01, 0x02, 0x03])],
+    ]);
+    for (const [name, body] of [...texts, ...binaries]) await writeFile(join(folder, name), body);
+    await writeFile(join(folder, "live x.iso"), "Glob match with different bytes");
+    const nested = Buffer.from("Nested package only");
+    await writeFile(join(folder, "child", "package.deb"), nested);
+
+    await page.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
+    await page.open(origin + directory + "?view=terminal&click-files");
+    async function clickEntry(path) {
+      const selector = ".clickable-file[data-file=" + JSON.stringify(path) + "]";
+      await page.wait("document.querySelector(" + JSON.stringify(selector) + ") !== null");
+      await center(selector);
+      const point = await page.evaluate(selector => {
+        const { left, top, width, height } = document.querySelector(selector).getBoundingClientRect();
+        return { x: left + width / 2, y: top + height / 2 };
+      }, selector);
+      await page.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...point });
+      await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...point });
+    }
+    async function checkDownload(name, expected) {
+      const body = await until(async () => {
+        try {
+          return await readFile(join(downloads, name));
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }, "downloaded " + name);
+      assert.deepEqual(body, expected);
+      await rm(join(downloads, name));
+    }
+
+    for (const [name, body] of texts) {
+      await clickEntry(directory + "/" + name);
+      await page.wait('document.querySelector("#terminal-status").textContent === ' + JSON.stringify(body));
+    }
+    for (const [name, body] of binaries) {
+      await clickEntry(directory + "/" + name);
+      await checkDownload(name, body);
+    }
+    await command("tree");
+    await clickEntry(directory + "/child/package.deb");
+    await checkDownload("package.deb", nested);
+    await clickEntry(directory + "/child");
+    await page.wait('location.pathname === "/click-files/child"');
+  });
+
   await t.test("Keyboard completion, focus, live status and transfer controls", async () => {
     await page.open(origin + "/docs?keyboard-fixture=1");
     await page.send("Page.bringToFront");

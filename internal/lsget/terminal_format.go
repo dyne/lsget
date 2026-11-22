@@ -100,6 +100,60 @@ func colorizeName(info os.FileInfo, name string) string {
 	return color + name + colorReset
 }
 
+type terminalListingRow struct {
+	Prefix  string `json:"prefix,omitempty"`
+	Label   string `json:"label"`
+	Path    string `json:"path"`
+	Command string `json:"command"`
+	Color   string `json:"color,omitempty"`
+	Bold    bool   `json:"bold,omitempty"`
+}
+
+type terminalListingView struct {
+	Rows []terminalListingRow `json:"rows"`
+	Tail string               `json:"tail,omitempty"`
+}
+
+type terminalListing struct {
+	boundedText
+	rows []terminalListingRow
+}
+
+func (l *terminalListing) add(prefix, label, target string, info os.FileInfo) error {
+	command := "get"
+	if info.IsDir() {
+		command = "cd"
+		label += "/"
+	} else if getFileCategory(target) == FileCategoryText {
+		command = "cat"
+	}
+	return l.addRow(prefix, label, target, command, getFileColor(info, target))
+}
+
+func (l *terminalListing) addRow(prefix, label, target, command, style string) error {
+	if err := l.line(prefix + style + label + colorReset); err != nil {
+		return err
+	}
+	color, bold := strings.CutSuffix(style, colorBold)
+	l.rows = append(l.rows, terminalListingRow{
+		Prefix: prefix, Label: label, Path: target, Command: command,
+		Color: strings.TrimSuffix(strings.TrimPrefix(color, "\x1b["), "m"), Bold: bold,
+	})
+	return nil
+}
+
+func (l *terminalListing) response(tail string, err error) execResp {
+	end := l.text.Len()
+	if tail != "" && err == nil {
+		err = l.line(tail)
+	}
+	response := l.boundedText.response("", err)
+	if len(l.rows) != 0 {
+		response.Listing = &terminalListingView{Rows: l.rows, Tail: response.Output[end:]}
+	}
+	return response
+}
+
 // FileCategory represents supported file types for different commands
 type FileCategory int
 
@@ -137,7 +191,7 @@ func getFileCategory(filename string) FileCategory {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	// Text files
-	case ".txt", ".md", ".rst", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg":
+	case ".txt", ".md", ".markdown", ".rst", ".nfo", ".tex", ".log", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg", ".sql":
 		return FileCategoryText
 	case ".html", ".htm", ".css", ".js", ".ts", ".jsx", ".tsx":
 		return FileCategoryText

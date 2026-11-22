@@ -78,7 +78,7 @@ function appendTranscript(render) {
 }
 
 function appendMessage(text) {
-  appendTranscript(entry => entry.append(terminalView.ansiLine(text, false)));
+  appendTranscript(entry => entry.append(terminalView.ansiLine(text)));
   announce(text);
 }
 
@@ -218,11 +218,11 @@ async function requestJSON(endpoint, directory, request, body) {
 }
 
 async function listDirectory(directory, request) {
-  const { output } = await requestJSON("exec", directory, request, { input: "ls" });
+  const { output, listing } = await requestJSON("exec", directory, request, { input: "ls" });
   if (request.signal.aborted) return;
   appendTranscript(entry => {
     terminalView.appendCommand(entry, prompt.textContent, "ls");
-    if (output) entry.append(terminalView.ansiLine(output, true));
+    if (output) entry.append(terminalView.renderOutput(output, listing));
   });
 }
 
@@ -310,7 +310,7 @@ function appendShareControls(entry, url) {
   entry.append(controls);
 }
 
-async function runCommand(command, listAfterCd = false) {
+async function runCommand(command, { listAfterCd = false, literalPath = false } = {}) {
   commandRequest?.abort();
   clearCompletion();
   appendTranscript(entry => terminalView.appendCommand(entry, prompt.textContent, command));
@@ -319,12 +319,15 @@ async function runCommand(command, listAfterCd = false) {
   commandRequest = request;
   try {
     const directory = cwd;
-    const response = await requestJSON("exec", directory, request, { input: command });
+    const response = await requestJSON("exec", directory, request, {
+      input: command,
+      ...(literalPath && { literalPath }),
+    });
     if (request.signal.aborted) return;
-    const { output, help, image, download, clipboard, redirect } = response;
+    const { output, listing, help, image, download, clipboard, redirect } = response;
     const link = terminalView.downloadLink(download);
     appendTranscript(entry => {
-      if (output && !clipboard) entry.append(terminalView.ansiLine(output, /^\s*(ls|dir|tree)(\s|$)/.test(command)));
+      if (output && !clipboard) entry.append(terminalView.renderOutput(output, listing));
       if (help) terminalView.appendHelp(entry);
       if (image) terminalView.appendImage(entry, image);
       if (link) entry.append(link);
@@ -535,7 +538,7 @@ transcript.addEventListener("click", event => {
   const { cmd, file } = item.dataset;
   const command = cmd + " " + quoteOperand(file);
   rememberCommand(command);
-  void runCommand(command, cmd === "cd");
+  void runCommand(command, { listAfterCd: cmd === "cd", literalPath: cmd === "get" });
   event.preventDefault();
 });
 
