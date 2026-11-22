@@ -770,7 +770,7 @@ func TestHandleIndex_DirectFileQuery(t *testing.T) {
 		}
 	}
 
-	const attachment = `attachment; filename="cryptographers-feedback-june2024.pdf"`
+	const inline = `inline; filename="cryptographers-feedback-june2024.pdf"`
 	tests := []struct {
 		name        string
 		target      string
@@ -778,10 +778,10 @@ func TestHandleIndex_DirectFileQuery(t *testing.T) {
 		body        string
 		disposition string
 	}{
-		{"direct path", "/eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, attachment},
-		{"query path", "/?file=eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, attachment},
-		{"root-relative query path", "/?file=/eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, attachment},
-		{"encoded filename", "/?file=eudi%2Ffeedback%20%2B%20notes.pdf", http.StatusOK, pdf, `attachment; filename="feedback + notes.pdf"`},
+		{"direct path", "/eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, inline},
+		{"query path", "/?file=eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, inline},
+		{"root-relative query path", "/?file=/eudi/cryptographers-feedback-june2024.pdf", http.StatusOK, pdf, inline},
+		{"encoded filename", "/?file=eudi%2Ffeedback%20%2B%20notes.pdf", http.StatusOK, pdf, `inline; filename="feedback + notes.pdf"`},
 		{"missing file", "/?file=eudi/missing.pdf", http.StatusNotFound, "", ""},
 		{"directory", "/?file=eudi", http.StatusNotFound, "", ""},
 		{"ignored file", "/?file=eudi/hidden.pdf", http.StatusNotFound, "", ""},

@@ -81,7 +81,7 @@ func TestArtifactTransfers(t *testing.T) {
 	} {
 		t.Run(route.name, func(t *testing.T) {
 			resp, body := request(t, http.MethodGet, route.target, nil)
-			checkArtifactHeaders(t, resp, http.StatusOK, wantMIME, archiveName)
+			checkArtifactHeaders(t, resp, http.StatusOK, wantMIME, "attachment", archiveName)
 			gotDigest := sha256.Sum256(body)
 			if gotDigest != wantDigest {
 				t.Fatalf("download digest %x, want %x", gotDigest, wantDigest)
@@ -92,13 +92,13 @@ func TestArtifactTransfers(t *testing.T) {
 			}
 
 			resp, body = request(t, http.MethodHead, route.target, nil)
-			checkArtifactHeaders(t, resp, http.StatusOK, wantMIME, archiveName)
+			checkArtifactHeaders(t, resp, http.StatusOK, wantMIME, "attachment", archiveName)
 			if len(body) != 0 || resp.Header.Get("Content-Length") != strconv.Itoa(len(archive)) {
 				t.Fatalf("HEAD returned %d body bytes and Content-Length %q", len(body), resp.Header.Get("Content-Length"))
 			}
 
 			resp, body = request(t, http.MethodGet, route.target, http.Header{"Range": {"bytes=5-16"}})
-			checkArtifactHeaders(t, resp, http.StatusPartialContent, wantMIME, archiveName)
+			checkArtifactHeaders(t, resp, http.StatusPartialContent, wantMIME, "attachment", archiveName)
 			if !bytes.Equal(body, archive[5:17]) || resp.Header.Get("Content-Range") != fmt.Sprintf("bytes 5-16/%d", len(archive)) {
 				t.Fatalf("range returned %x and Content-Range %q", body, resp.Header.Get("Content-Range"))
 			}
@@ -128,12 +128,19 @@ func TestArtifactTransfers(t *testing.T) {
 	})
 
 	t.Run("pdf", func(t *testing.T) {
-		for _, target := range []string{"/guide.pdf", "/?file=guide.pdf"} {
-			resp, body := request(t, http.MethodGet, target, nil)
-			checkArtifactHeaders(t, resp, http.StatusOK, "application/pdf", "guide.pdf")
-			if !bytes.Equal(body, pdf) {
-				t.Fatalf("%s returned %q, want %q", target, body, pdf)
-			}
+		for _, route := range []struct{ name, target, disposition string }{
+			{"direct", "/guide.pdf", "inline"},
+			{"query", "/?file=guide.pdf", "inline"},
+			{"api_static", "/api/static/guide.pdf", "inline"},
+			{"api_download", "/api/download?path=/guide.pdf", "attachment"},
+		} {
+			t.Run(route.name, func(t *testing.T) {
+				resp, body := request(t, http.MethodGet, route.target, nil)
+				checkArtifactHeaders(t, resp, http.StatusOK, "application/pdf", route.disposition, "guide.pdf")
+				if !bytes.Equal(body, pdf) {
+					t.Fatalf("%s returned %q, want %q", route.target, body, pdf)
+				}
+			})
 		}
 	})
 
@@ -147,7 +154,7 @@ func TestArtifactTransfers(t *testing.T) {
 			{"/api/download?pattern=/release/*.tar.gz", "archive.zip", map[string][]byte{archiveName: archive}},
 		} {
 			resp, body := request(t, http.MethodGet, route.target, nil)
-			checkArtifactHeaders(t, resp, http.StatusOK, "application/zip", route.filename)
+			checkArtifactHeaders(t, resp, http.StatusOK, "application/zip", "attachment", route.filename)
 			zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 			if err != nil {
 				t.Fatal(err)
@@ -165,13 +172,13 @@ func TestArtifactTransfers(t *testing.T) {
 	})
 }
 
-func checkArtifactHeaders(t *testing.T, resp *http.Response, status int, contentType, filename string) {
+func checkArtifactHeaders(t *testing.T, resp *http.Response, status int, contentType, disposition, filename string) {
 	t.Helper()
-	disposition, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
+	gotDisposition, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
 	if resp.StatusCode != status || resp.Header.Get("Content-Type") != contentType ||
-		err != nil || disposition != "attachment" || params["filename"] != filename {
-		t.Fatalf("HTTP %d, MIME %q, disposition %q; want HTTP %d, MIME %q, attachment %q",
-			resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Disposition"), status, contentType, filename)
+		err != nil || gotDisposition != disposition || params["filename"] != filename {
+		t.Fatalf("HTTP %d, MIME %q, disposition %q; want HTTP %d, MIME %q, %s %q",
+			resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Content-Disposition"), status, contentType, disposition, filename)
 	}
 }
 

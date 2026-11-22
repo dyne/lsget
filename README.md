@@ -135,6 +135,8 @@ Open `http://127.0.0.1:8080/` for the terminal or run `curl -fsS http://127.0.0.
 
 A file in the served directory can be shared by its path, such as `/eudi/report.pdf`, or with the `file` query parameter, such as `/?file=eudi/report.pdf`. Both resolve from the served root. Encode special characters in each path segment and in the query value. For example, `meeting notes #1.pdf` becomes `meeting%20notes%20%231.pdf`, and a literal `+` in the query value becomes `%2B`.
 
+Both link forms open PDFs inline in browsers with a PDF viewer. Use the Files view's Download action or the terminal's `download` command to save a copy.
+
 For scripted downloads, use `?file=` to receive HTTP 404 for a missing or ignored file or a directory. A missing direct path can return the terminal HTML with HTTP 200. Verify the downloaded bytes against the publisher's checksum before unpacking. For example, if the release includes `release/release files.tar.gz` and you have a trusted `release.sha256` for `release-files.tar.gz`, check either URL form on a listener serving that tree.
 
 ```sh
