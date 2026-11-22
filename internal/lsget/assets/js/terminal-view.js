@@ -216,7 +216,7 @@ function line(output = false) {
   return node;
 }
 
-function ansiLine(text, clickable) {
+function ansiLine(text) {
   const node = line(true);
   const sequence = /\x1b\[([0-?]*)([ -/]*)([@-~])/g;
   let color = "";
@@ -232,12 +232,6 @@ function ansiLine(text, clickable) {
       span.textContent = run;
       if (color) span.style.color = color;
       if (bold) span.style.fontWeight = "400";
-      if (clickable && color) {
-        const dir = run.endsWith("/");
-        span.className = "clickable-file";
-        span.dataset.cmd = dir ? "cd" : "cat";
-        span.dataset.file = dir && run !== "/" ? run.slice(0, -1) : run;
-      }
       node.append(span);
     }
     run = "";
@@ -261,6 +255,26 @@ function ansiLine(text, clickable) {
   }
   run += text.slice(offset);
   flush();
+  return node;
+}
+
+function renderOutput(text, listing) {
+  if (!listing) return ansiLine(text);
+  const node = line(true);
+  for (const [index, row] of listing.rows.entries()) {
+    if (index) node.append("\n");
+    if (row.prefix) node.append(row.prefix);
+    const item = document.createElement("span");
+    item.className = "clickable-file";
+    item.textContent = row.label;
+    item.dataset.cmd = row.command;
+    item.dataset.file = row.path;
+    const color = ansiColors.get(row.color);
+    if (color) item.style.color = color;
+    if (row.bold) item.style.fontWeight = "400";
+    node.append(item);
+  }
+  if (listing.tail) node.append(listing.tail);
   return node;
 }
 
@@ -308,4 +322,4 @@ function downloadLink(value) {
   return link;
 }
 
-export { ansiLine, appendCommand, appendHelp, appendImage, downloadLink, pathURL, readme, sameOriginURL };
+export { ansiLine, appendCommand, appendHelp, appendImage, downloadLink, pathURL, readme, renderOutput, sameOriginURL };

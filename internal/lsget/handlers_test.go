@@ -182,11 +182,12 @@ func TestHandleExec_PublicCommands(t *testing.T) {
 		want       execResp
 		contains   string
 		wantReadme string
+		listedRows int
 	}{
 		{name: "help", want: execResp{Help: true}},
 		{name: "pwd", want: execResp{Output: "/", CWD: "/"}},
-		{name: "ls", args: ` -lh "/team docs"`, contains: "11B"},
-		{name: "dir", args: ` -a "/team docs"`, contains: "/team docs/.hidden"},
+		{name: "ls", args: ` -lh "/team docs"`, contains: "11B", listedRows: 2},
+		{name: "dir", args: ` -a "/team docs"`, contains: "/team docs/.hidden", listedRows: 3},
 		{name: "cd", args: ` "team docs"`, want: execResp{CWD: "/team docs", DocType: "markdown"}, wantReadme: "# Team docs\n"},
 		{name: "cat", args: ` "/team docs/note one.txt"`, want: execResp{Output: "Alpha Beta\n"}},
 		{name: "get", args: ` "/team docs/note one.txt"`, want: execResp{Download: download}},
@@ -197,7 +198,7 @@ func TestHandleExec_PublicCommands(t *testing.T) {
 		{name: "share", args: ` "/team docs/note one.txt"`, want: execResp{Clipboard: share}, contains: "URL copied to clipboard!"},
 		{name: "sum", args: ` "/team docs/note one.txt"`, want: execResp{Output: hashes}},
 		{name: "checksum", args: ` "/team docs/note one.txt"`, want: execResp{Output: hashes}},
-		{name: "tree", args: ` -L1 -a "/team docs"`, contains: "0 directories, 3 files"},
+		{name: "tree", args: ` -L1 -a "/team docs"`, contains: "0 directories, 3 files", listedRows: 3},
 		{name: "find", args: ` "/team docs" -name "note *.txt" -type f`, want: execResp{Output: colorWhite + "/team docs/note one.txt" + colorReset}},
 		{name: "grep", args: ` -rin "alpha beta" "/team docs"`, contains: "Alpha Beta"},
 		// The README lists stats, which currently reaches the unknown-command response.
@@ -223,6 +224,12 @@ func TestHandleExec_PublicCommands(t *testing.T) {
 					t.Fatalf("unexpected README: %+v", got)
 				}
 				got.Readme = nil
+			}
+			if test.listedRows > 0 {
+				if got.Listing == nil || len(got.Listing.Rows) != test.listedRows {
+					t.Fatalf("listing: %+v, want %d rows", got.Listing, test.listedRows)
+				}
+				got.Listing = nil
 			}
 			if got != test.want {
 				t.Fatalf("response: %+v, want %+v", got, test.want)

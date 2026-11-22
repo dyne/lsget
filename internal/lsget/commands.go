@@ -12,22 +12,24 @@ import (
 )
 
 type execReq struct {
-	Input string `json:"input"`
+	Input       string `json:"input"`
+	LiteralPath bool   `json:"literalPath,omitempty"`
 }
 
 type execResp struct {
-	Output          string     `json:"output"`
-	Truncated       bool       `json:"truncated,omitempty"`
-	Download        string     `json:"download,omitempty"`
-	CWD             string     `json:"cwd,omitempty"`
-	Readme          *string    `json:"readme,omitempty"`
-	DocType         string     `json:"docType,omitempty"`
-	ReadmeTruncated bool       `json:"readmeTruncated,omitempty"`
-	Clipboard       string     `json:"clipboard,omitempty"`
-	HTML            string     `json:"html,omitempty"`
-	Help            bool       `json:"help,omitempty"`
-	Image           *execImage `json:"image,omitempty"`
-	Redirect        string     `json:"redirect,omitempty"`
+	Output          string               `json:"output"`
+	Truncated       bool                 `json:"truncated,omitempty"`
+	Download        string               `json:"download,omitempty"`
+	CWD             string               `json:"cwd,omitempty"`
+	Readme          *string              `json:"readme,omitempty"`
+	DocType         string               `json:"docType,omitempty"`
+	ReadmeTruncated bool                 `json:"readmeTruncated,omitempty"`
+	Clipboard       string               `json:"clipboard,omitempty"`
+	HTML            string               `json:"html,omitempty"`
+	Help            bool                 `json:"help,omitempty"`
+	Image           *execImage           `json:"image,omitempty"`
+	Redirect        string               `json:"redirect,omitempty"`
+	Listing         *terminalListingView `json:"listing,omitempty"`
 }
 
 type execImage struct {
@@ -43,6 +45,7 @@ type terminalCommand struct {
 	name         string
 	args         []string
 	requestedCWD string
+	literalPath  bool
 	root         *os.Root
 	budget       *workBudget
 	releaseWork  func()
@@ -65,7 +68,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 	command := terminalCommand{
 		server: s, writer: w, request: r, name: args[0], args: args[1:],
-		requestedCWD: requestCWD(r), budget: newWorkBudget(),
+		requestedCWD: requestCWD(r), literalPath: req.LiteralPath, budget: newWorkBudget(),
 	}
 	defer command.finish()
 

@@ -112,8 +112,8 @@ func (c *terminalCommand) download() {
 		return
 	}
 
-	// Check if pattern contains wildcards or is a directory
-	if strings.ContainsAny(pattern, "*?[") || pattern == "." {
+	// A name selected from a listing refers to one exact path, even with glob characters.
+	if !c.literalPath && (strings.ContainsAny(pattern, "*?[") || pattern == ".") {
 		// Handle pattern-based download (multiple files)
 		release := c.server.reserveWork(c.writer, c.request)
 		if release == nil {

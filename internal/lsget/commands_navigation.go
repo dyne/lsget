@@ -54,13 +54,13 @@ func (c *terminalCommand) list() {
 	}
 	// If path is a file, show just the file
 	if !info.IsDir() {
-		// If it's a file, show the file in the listing with absolute virtual path
-		displayName := virtualPath
+		var output terminalListing
+		prefix := ""
 		if long {
-			c.respond(execResp{Output: formatLong(info, colorizeName(info, displayName), humanReadable)})
-		} else {
-			c.respond(execResp{Output: colorizeName(info, displayName)})
+			prefix = formatLong(info, "", humanReadable)
 		}
+		err := output.add(prefix, virtualPath, virtualPath, info)
+		c.respond(output.response("", err))
 		return
 	}
 	// It is a directory, show its contents
@@ -72,13 +72,13 @@ func (c *terminalCommand) list() {
 		c.respond(execResp{Output: "ls: error"})
 		return
 	}
-	var output boundedText
+	var output terminalListing
 	if cwd != "/" {
-		parent := colorBlue + colorBold + "../" + colorReset
+		prefix := ""
 		if long {
-			parent = "drwxr-xr-x          - " + parent
+			prefix = "drwxr-xr-x          - "
 		}
-		_ = output.line(parent)
+		_ = output.addRow(prefix, "../", path.Dir(cwd), "cd", colorBlue+colorBold)
 	}
 	for _, entry := range children {
 		if ctx.Err() != nil {
@@ -88,11 +88,12 @@ func (c *terminalCommand) list() {
 		if !showHidden && strings.HasPrefix(base, ".") {
 			continue
 		}
-		display := colorizeName(entry.info, path.Join(virtualPath, base))
+		display := path.Join(virtualPath, base)
+		prefix := ""
 		if long {
-			display = formatLong(entry.info, display, humanReadable)
+			prefix = formatLong(entry.info, "", humanReadable)
 		}
-		if appendErr := output.line(display); appendErr != nil {
+		if appendErr := output.add(prefix, display, display, entry.info); appendErr != nil {
 			err = appendErr
 			break
 		}

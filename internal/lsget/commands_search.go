@@ -52,7 +52,7 @@ func (c *terminalCommand) tree() {
 		return
 	}
 
-	var result boundedText
+	var result terminalListing
 	dirCount, fileCount, err := buildTree(ctx, c.budget, c.root, &result, name, showHidden, maxDepth)
 	if ctx.Err() != nil {
 		return
@@ -61,10 +61,7 @@ func (c *terminalCommand) tree() {
 		c.respond(execResp{Output: "tree: cannot read directory"})
 		return
 	}
-	if err == nil {
-		err = result.line(fmt.Sprintf("\n%d directories, %d files", dirCount, fileCount))
-	}
-	c.respond(result.response("", err))
+	c.respond(result.response(fmt.Sprintf("\n%d directories, %d files", dirCount, fileCount), err))
 }
 
 func (c *terminalCommand) find() {
@@ -240,7 +237,7 @@ func findFiles(ctx context.Context, budget *workBudget, root *os.Root, dir, patt
 }
 
 // buildTree renders the visible children of a directory and their descendants.
-func buildTree(ctx context.Context, budget *workBudget, root *os.Root, result *boundedText, dir string, showHidden bool, maxDepth int) (int, int, error) {
+func buildTree(ctx context.Context, budget *workBudget, root *os.Root, result *terminalListing, dir string, showHidden bool, maxDepth int) (int, int, error) {
 	var render func(string, string, int) (int, int, error)
 	render = func(dir, prefix string, depth int) (int, int, error) {
 		if depth == maxDepth {
@@ -275,7 +272,7 @@ func buildTree(ctx context.Context, budget *workBudget, root *os.Root, result *b
 				connector = "└── "
 				childPrefix = prefix + "    "
 			}
-			if err := result.line(prefix + connector + colorizeName(entry.info, path.Base(entry.name))); err != nil {
+			if err := result.add(prefix+connector, path.Base(entry.name), cleanVirtual(entry.name), entry.info); err != nil {
 				return dirCount, fileCount, err
 			}
 			if !entry.descend {

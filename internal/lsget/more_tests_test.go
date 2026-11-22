@@ -274,7 +274,7 @@ func TestBuildTree_HiddenAndDepth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var b boundedText
+	var b terminalListing
 	dirs, files, err := buildTree(t.Context(), newWorkBudget(), openTestDownloadRoot(t, s.rootAbs), &b, ".", true, 1)
 	if err != nil {
 		t.Fatal(err)
