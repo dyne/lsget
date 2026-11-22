@@ -784,17 +784,18 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
         input: document.querySelector("#command").value,
         suggestionsClosed: document.querySelector("#completions").hidden &&
           document.querySelector("#completion-options").children.length === 0,
+        action: document.getElementById("complete-command").textContent,
         sameScrollback: window.savedTranscript.every((node, index) => node === document.querySelector("#transcript").children[index]),
         held: window.navigationFixture.holds.size,
         settled: [...window.navigationFixture.settled],
       })), {
-        input: "cat REX", suggestionsClosed: true, sameScrollback: true, held: 0,
+        input: "cat REX", suggestionsClosed: true, action: "Complete", sameScrollback: true, held: 0,
         settled: ["cd /rst", "completion"],
       });
       await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "u", modifiers: 2, windowsVirtualKeyCode: 85 });
       await page.send("Input.insertText", { text: "cat RE" });
       await page.evaluate('document.querySelector("#complete-command").click()');
-      await page.wait('document.querySelector("#command").value === "cat README.md"');
+      await page.wait('document.querySelector("#command").value === "cat README.md" && document.getElementById("complete-command").textContent === "Enter"');
       t.diagnostic("Two real API responses held and released. URL, prompt, README, history length, focused input and scrollback identity verified.");
 
       const filePath = touchPath + "/entry-27.txt";
@@ -1065,8 +1066,22 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     await key("Enter", 13);
     assert.equal(await focus(), "command");
     assert.equal(await page.evaluate('document.querySelector("#command").value'), 'cat "read me two.txt"');
+    await key("Tab", 9);
+    assert.deepEqual(await page.evaluate(() => [document.activeElement.id, document.activeElement.textContent]),
+      ["complete-command", "Enter"]);
     await key("Enter", 13);
     await page.wait('document.querySelector("#terminal-status").textContent === "Second path suggestion opened."');
+    assert.equal(await page.evaluate('document.getElementById("complete-command").textContent'), "Complete");
+
+    await page.send("Input.insertText", { text: "cat gu" });
+    await page.evaluate('document.getElementById("complete-command").click()');
+    await page.wait('document.getElementById("command").value === "cat guide/"');
+    assert.equal(await page.evaluate('document.getElementById("complete-command").textContent'), "Complete");
+    await page.evaluate('document.getElementById("complete-command").click()');
+    await page.wait('document.getElementById("command").value === "cat guide/index.html" && document.getElementById("complete-command").textContent === "Enter"');
+    await page.send("Input.insertText", { text: "x" });
+    assert.equal(await page.evaluate('document.getElementById("complete-command").textContent'), "Complete");
+    await key("u", 85, 2);
 
     await page.evaluate(() => {
       window.keyboardCopies = [];
@@ -1162,8 +1177,10 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
             await tap("#completion-option-0");
             assert.equal(await page.evaluate('document.querySelector("#command").value'), 'cat "read me two.txt"');
             assert.equal(await page.evaluate("document.activeElement.id"), "command");
-            await key("Enter", 13);
+            assert.equal(await page.evaluate('document.getElementById("complete-command").textContent'), "Enter");
+            await tap("#complete-command");
             await page.wait('document.querySelector("#terminal-status").textContent === "Second path suggestion opened."');
+            assert.equal(await page.evaluate('document.getElementById("complete-command").textContent'), "Complete");
             const measured = await page.evaluate(() => {
               const button = document.querySelector("#readme-toggle");
               const box = button.getBoundingClientRect();

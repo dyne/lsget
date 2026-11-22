@@ -34,6 +34,7 @@ let commandRequest;
 let completionRequest;
 let suggestions = [];
 let selectedSuggestion = -1;
+let completedInput;
 let composing = false;
 let readmeOpen = false;
 let readmeClosing = false;
@@ -83,6 +84,7 @@ function appendMessage(text) {
 }
 
 function setInput(text, position = text.length) {
+  setCompletedInput();
   input.value = text;
   input.setSelectionRange(position, position);
 }
@@ -101,6 +103,7 @@ function rememberCommand(command) {
 
 function setDirectory(path) {
   if (path !== cwd) {
+    setCompletedInput();
     readmeRequest?.abort();
     readmeRequest = undefined;
     readmeLoaded = false;
@@ -136,6 +139,11 @@ function clearCompletion() {
   completionOptions.replaceChildren();
 }
 
+function setCompletedInput(suggestion) {
+  completedInput = suggestion;
+  completeButton.textContent = suggestion ? "Enter" : "Complete";
+}
+
 function showCompletion(message, announcement = message) {
   completionHint.textContent = message;
   completions.hidden = false;
@@ -156,8 +164,9 @@ function acceptSuggestion(index) {
   const suggestion = suggestions[index];
   setInput(suggestion.command);
   clearCompletion();
+  if (suggestion.ready) setCompletedInput(suggestion);
   focusInput();
-  announce("Completed " + suggestion.name + ".");
+  announce("Completed " + suggestion.name + "." + (suggestion.ready ? " Use Enter to run the command." : ""));
 }
 
 function updateReadme(open = false) {
@@ -397,7 +406,8 @@ async function completeInput() {
   }
   const dirsOnly = command === "cd";
   const textOnly = command === "cat";
-  const filesOnly = textOnly || ["wget", "get", "rget", "download", "url", "share", "sum", "checksum"].includes(command);
+  const download = ["wget", "get", "rget", "download"].includes(command);
+  const filesOnly = textOnly || download || ["url", "share", "sum", "checksum"].includes(command);
   if (!(dirsOnly || filesOnly || command === "ls" || command === "dir")) {
     showCompletion("Type ls, cd, cat, or another command with a path to complete.");
     return;
@@ -419,7 +429,10 @@ async function completeInput() {
     const prefix = command + (flags ? " " + flags.trimEnd() : "") + " ";
     suggestions = items.map(item => {
       const name = item.name + (item.dir ? "/" : "");
-      return { name, command: prefix + quoteOperand(dirPart + name) };
+      return {
+        name, command: prefix + quoteOperand(dirPart + name),
+        ready: !item.dir || !filesOnly || download, literalPath: download,
+      };
     });
     if (suggestions.length === 1 && !truncated) {
       acceptSuggestion(0);
@@ -455,14 +468,23 @@ async function completeInput() {
   }
 }
 
-input.addEventListener("input", clearCompletion);
+input.addEventListener("input", () => {
+  clearCompletion();
+  setCompletedInput();
+});
 input.addEventListener("blur", clearCompletion);
 input.addEventListener("compositionstart", () => { composing = true; });
 input.addEventListener("compositionend", () => { composing = false; });
 
 completeButton.addEventListener("click", () => {
   focusInput();
-  void completeInput();
+  if (composing) return;
+  if (completedInput?.command === input.value) {
+    form.requestSubmit();
+  } else {
+    setCompletedInput();
+    void completeInput();
+  }
 });
 
 completionOptions.addEventListener("mousedown", event => event.preventDefault());
@@ -476,9 +498,10 @@ form.addEventListener("submit", event => {
   // A composing Enter can also trigger an implicit form submission.
   if (composing) return;
   const command = input.value;
+  const literalPath = completedInput?.command === command && completedInput.literalPath;
   rememberCommand(command);
   setInput("");
-  void runCommand(command);
+  void runCommand(command, { literalPath });
 });
 
 input.addEventListener("keydown", event => {
@@ -515,6 +538,7 @@ input.addEventListener("keydown", event => {
     const prefix = input.value.slice(0, input.selectionStart).replace(/\S*\s*$/, "");
     input.setRangeText("", prefix.length, input.selectionEnd, "end");
     clearCompletion();
+    setCompletedInput();
   } else if (event.ctrlKey && key === "k") {
     setInput(input.value.slice(0, input.selectionStart));
     clearCompletion();
