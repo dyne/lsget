@@ -219,7 +219,7 @@ const helpTpl = `Welcome to <span class="ps1">lsget</span> <span class="help-ver
 • <strong>grep</strong> <span class="help-note">[-r] [-i] [-n] PATTERN [FILE...]</span> - <span class="help-description">search for text patterns in files</span>
 
 <br/><br/>
-<span class="help-heading"><strong>Complete</strong> suggests file and directory names.</span>
+<span class="help-heading"><strong>Complete</strong> suggests file and directory names. It becomes <strong>Enter</strong> when the command is ready to run.</span>
 `
 
 func renderHelp() string {
