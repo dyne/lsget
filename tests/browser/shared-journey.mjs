@@ -19,7 +19,7 @@ const archiveBytes = Buffer.from("UEsDBBQAAAAAAAAAdV0E8FYcFQAAABUAAAAIAAAAbm90ZS
 const fileLink = path => `.file-row[href=${JSON.stringify(path)}]`;
 const terminalFile = path => `.clickable-file[data-file=${JSON.stringify(path)}]`;
 const filesAt = path => `location.pathname === ${JSON.stringify(path)} && document.querySelector("main h1")?.textContent === ${JSON.stringify("Index of " + path)}`;
-const terminalAt = path => `location.pathname === ${JSON.stringify(path)} && document.querySelector("#command-prompt")?.textContent === ${JSON.stringify("guest@browser:" + path + "$ ")}`;
+const terminalAt = path => `location.pathname === ${JSON.stringify(path)} && document.querySelector("#command-prompt")?.textContent === ${JSON.stringify(path)}`;
 const readmeReady = `document.querySelector("#readme h1")?.textContent === ${JSON.stringify(readmeHeading)}`;
 
 export async function createSharedJourneyFixture(site) {

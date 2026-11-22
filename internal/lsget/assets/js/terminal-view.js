@@ -283,7 +283,7 @@ function appendCommand(transcript, ps1, command) {
   const prompt = document.createElement("span");
   prompt.className = "ps1";
   prompt.textContent = ps1;
-  node.append(prompt, command);
+  node.append(prompt, " ", command);
   transcript.append(node);
 }
 

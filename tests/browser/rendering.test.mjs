@@ -730,7 +730,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     const instrumentation = await holdNavigationResponses();
     const directoryIs = (path, readme) => page.wait([
       'location.pathname === ' + JSON.stringify(path),
-      'document.querySelector("#command-prompt")?.textContent === ' + JSON.stringify("guest@browser:" + path + "$ "),
+      'document.querySelector("#command-prompt")?.textContent === ' + JSON.stringify(path),
       'document.querySelector("#readme h1")?.textContent === ' + JSON.stringify(readme),
       'document.activeElement?.id === "command"',
     ].join(" && "));
@@ -749,7 +749,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       await command("cd /rst");
       await page.wait('navigationFixture.holds.has("cd /rst")');
       await command("cd /below");
-      const below = 'location.pathname === "/below" && document.querySelector("#command-prompt").textContent === "guest@browser:/below$ " && document.querySelector("#readme pre")?.textContent.length === 262143';
+      const below = 'location.pathname === "/below" && document.querySelector("#command-prompt").textContent === "/below" && document.querySelector("#readme pre")?.textContent.length === 262143';
       await page.wait(below);
       await page.evaluate(async () => {
         window.navigationFixture.release("cd /rst");
@@ -830,7 +830,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
           held: navigationFixture.holds.size,
           settled: [...navigationFixture.settled],
         })), {
-          path: touchChild, view: "terminal", prompt: "guest@browser:" + touchChild + "$ ",
+          path: touchChild, view: "terminal", prompt: touchChild,
           focused: "transcript", staleOutput: false, held: 0, settled: [heldCommand],
         });
         await center(entry(childFilePath));
@@ -876,7 +876,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
         document.querySelector("#command-prompt").textContent,
         document.querySelector("#readme [role=status]").textContent,
         document.activeElement?.id,
-      ]), ["guest@browser:/docs$ ", "Could not load the README.", "command"]);
+      ]), ["/docs", "Could not load the README.", "command"]);
       await command("pwd");
       await page.wait('document.querySelector("#transcript").textContent.includes("Could not run the command")');
       await expectSpeech("Could not run the command");
@@ -1343,7 +1343,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
       await tap(toggle);
       await page.wait(closed);
       await command("cd /rst");
-      await page.wait('location.pathname === "/rst" && document.querySelector("#command-prompt").textContent === "guest@browser:/rst$ "');
+      await page.wait('location.pathname === "/rst" && document.querySelector("#command-prompt").textContent === "/rst"');
       assert.equal(configs("/rst").length, 0);
       assert.equal(await page.evaluate('document.querySelector("#readme h1")'), null);
       assert.ok(requests().some(url => url.pathname === "/api/exec" && url.searchParams.get("readme") === "0"));
@@ -1411,7 +1411,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     const toggle = "#readme-toggle";
     const childLink = '.clickable-file[data-file=' + JSON.stringify(child) + ']';
     const inFolder = path => 'location.pathname === ' + JSON.stringify(path) +
-      ' && document.querySelector("#command-prompt")?.textContent === ' + JSON.stringify("guest@browser:" + path + "$ ");
+      ' && document.querySelector("#command-prompt")?.textContent === ' + JSON.stringify(path);
     const blocking = 'document.querySelector(".terminal").inert';
     const readmeVisible = 'document.querySelector("#readme").classList.contains("show")';
     const toggleFocused = 'document.activeElement?.id === "readme-toggle"';
@@ -2110,7 +2110,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     const captures = [];
     async function current(path, view) {
       await page.wait(`decodeURIComponent(location.pathname) === ${JSON.stringify(path)} && new URLSearchParams(location.search).get('view') === ${JSON.stringify(view)}`);
-      await page.wait(view === "terminal" ? `document.querySelector('#command-prompt')?.textContent === ${JSON.stringify("guest@browser:" + path + "$ ")}` : `document.querySelector('h1')?.textContent === ${JSON.stringify("Index of " + path)}`);
+      await page.wait(view === "terminal" ? `document.querySelector('#command-prompt')?.textContent === ${JSON.stringify(path)}` : `document.querySelector('h1')?.textContent === ${JSON.stringify("Index of " + path)}`);
       assert.equal(await page.evaluate("new URLSearchParams(location.search).get('file')"), null);
       assert.equal(await page.evaluate("new URLSearchParams(location.search).get('keep')"), "two&words");
     }
@@ -2175,7 +2175,7 @@ test("Terminal and README rendering in Chrome", { timeout: 45_000 }, async (t) =
     const directoryServer = () => startServer(cleanups, binary, site, workA, mode, "", ["-baseurl", publicBase]);
     const address = await directoryServer();
     const visible = view => view === "terminal"
-      ? `document.querySelector("#command-prompt")?.textContent === ${JSON.stringify("guest@browser:" + touchChild + "$ ")}`
+      ? `document.querySelector("#command-prompt")?.textContent === ${JSON.stringify(touchChild)}`
       : `document.querySelector("main h1")?.textContent === ${JSON.stringify("Index of " + touchChild)}`;
     const shellScripts = ["terminal-view.js", "terminal.js"];
     const icon = await readFile(new URL("../../internal/lsget/assets/favicon.png", import.meta.url));
