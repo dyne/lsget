@@ -108,7 +108,7 @@ function setDirectory(path) {
     panel.scrollTop = 0;
   }
   cwd = path;
-  prompt.textContent = "guest@browser:" + path + "$ ";
+  prompt.textContent = path;
   document.getElementById("files-view")?.setAttribute("href", directoryURL(path, "files"));
   document.getElementById("terminal-view")?.setAttribute("href", directoryURL(path, "terminal"));
 }
